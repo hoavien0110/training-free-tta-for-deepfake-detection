@@ -136,7 +136,10 @@ python -m deepfake_tta.cli eval-corruption-levels \
   --feature-dir /kaggle/input/datasets/vhonghoavin/deepfakebench-features \
   --train-features /kaggle/input/datasets/vhonghoavin/deepfakebench-features/ffpp_train_features.pt \
   --levels 1 2 3 4 5 \
-  --tta-methods tip_adapter boost_adapter crg dmn dpe dota freetta bca dynaprompt \
+  --tta-methods tip_adapter boost_adapter online_confident_cache_adapter crg dmn dpe dota freetta bca dynaprompt \
+  --load-model /kaggle/working/ufd_linear_probe_ffpp_all_levels.pt \
+  --method-cache-dir /kaggle/working/tta_method_cache \
+  --continue-on-error \
   --model-output /kaggle/working/ufd_linear_probe_ffpp_all_levels.pt \
   --results-output /kaggle/working/celebdfv1_all_level_corruption_results.csv
 ```

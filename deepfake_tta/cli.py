@@ -15,6 +15,7 @@ from deepfake_tta.features import (
 )
 from deepfake_tta.modeling import (
     evaluate_probe,
+    LinearProbe,
     load_feature_file,
     seed_everything,
     train_linear_probe,
@@ -39,11 +40,24 @@ def add_common_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument(
+        "--load-model",
+        help="Load a saved LinearProbe state_dict and skip training.",
+    )
+    parser.add_argument(
+        "--method-cache-dir",
+        help="Directory for reusable method caches, e.g. compact source caches.",
+    )
+    parser.add_argument(
         "--tta-methods",
         nargs="+",
         choices=AVAILABLE_TTA_METHODS,
         default=["tip_adapter"],
         help="TTA methods to run after the linear probe baseline.",
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Record method errors in the results CSV and continue evaluating other methods.",
     )
 
 
@@ -55,12 +69,42 @@ def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train
             beta=args.beta,
             test_batch_size=args.tip_test_batch_size,
             cache_batch_size=args.tip_cache_batch_size,
+            method_cache_dir=args.method_cache_dir,
         )
         for method_name in args.tta_methods
     ]
     for method in methods:
         method.fit(train_feats, train_labels)
     return methods
+
+
+def load_or_train_linear_probe(
+    args: argparse.Namespace,
+    train_feats: torch.Tensor,
+    train_labels: torch.Tensor,
+    device: str,
+) -> LinearProbe:
+    if getattr(args, "load_model", None):
+        model = LinearProbe(train_feats.shape[1]).to(device)
+        state = torch.load(args.load_model, map_location=device)
+        model.load_state_dict(state)
+        model.eval()
+        print("loaded model from:", args.load_model)
+        return model
+
+    model = train_linear_probe(
+        train_feats,
+        train_labels,
+        device=device,
+        epochs=args.epochs,
+        batch_size=args.train_batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+    Path(args.model_output).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), args.model_output)
+    print("saved model to:", args.model_output)
+    return model
 
 
 def cmd_generate_corruptions(args: argparse.Namespace) -> None:
@@ -171,18 +215,7 @@ def cmd_train_eval(args: argparse.Namespace) -> None:
     device = device_arg(args.device)
     seed_everything(args.seed)
     train_feats, train_labels, _ = load_feature_file(args.train_features)
-    model = train_linear_probe(
-        train_feats,
-        train_labels,
-        device=device,
-        epochs=args.epochs,
-        batch_size=args.train_batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    Path(args.model_output).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.model_output)
-    print("saved model to:", args.model_output)
+    model = load_or_train_linear_probe(args, train_feats, train_labels, device)
 
     rows = []
     rows.append(
@@ -216,22 +249,34 @@ def cmd_train_eval(args: argparse.Namespace) -> None:
         rows.append({"dataset": dataset_name, "feature_path": feature_path, "method": "linear_probe", **probe_metrics})
 
         for method in build_tta_methods(args, train_feats, train_labels):
-            method_metrics = method.evaluate(
-                model,
-                feats,
-                labels,
-                device,
-                name=f"{dataset_name} | {method.name}",
-                show_report=args.show_report,
-            )
-            rows.append(
-                {
-                    "dataset": dataset_name,
-                    "feature_path": feature_path,
-                    "method": method.name,
-                    **method_metrics,
-                }
-            )
+            try:
+                method_metrics = method.evaluate(
+                    model,
+                    feats,
+                    labels,
+                    device,
+                    name=f"{dataset_name} | {method.name}",
+                    show_report=args.show_report,
+                )
+                rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "feature_path": feature_path,
+                        "method": method.name,
+                        **method_metrics,
+                    }
+                )
+            except Exception as exc:
+                if not args.continue_on_error:
+                    raise
+                rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "feature_path": feature_path,
+                        "method": method.name,
+                        "error": repr(exc),
+                    }
+                )
 
     if args.results_output:
         pd.DataFrame(rows).to_csv(args.results_output, index=False)
@@ -242,18 +287,7 @@ def cmd_eval_corruptions(args: argparse.Namespace) -> None:
     device = device_arg(args.device)
     seed_everything(args.seed)
     train_feats, train_labels, _ = load_feature_file(args.train_features)
-    model = train_linear_probe(
-        train_feats,
-        train_labels,
-        device=device,
-        epochs=args.epochs,
-        batch_size=args.train_batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    Path(args.model_output).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.model_output)
-    print("saved model to:", args.model_output)
+    model = load_or_train_linear_probe(args, train_feats, train_labels, device)
 
     rows = [
         {
@@ -303,22 +337,34 @@ def evaluate_corruption_feature(
     rows.append({"level": level, "corruption": corruption, "method": "linear_probe", **probe_metrics})
 
     for method in build_tta_methods(args, train_feats, train_labels):
-        method_metrics = method.evaluate(
-            model,
-            feats,
-            labels,
-            device,
-            name=f"CelebDFv1 level {level} {corruption} | {method.name}",
-            show_report=False,
-        )
-        rows.append(
-            {
-                "level": level,
-                "corruption": corruption,
-                "method": method.name,
-                **method_metrics,
-            }
-        )
+        try:
+            method_metrics = method.evaluate(
+                model,
+                feats,
+                labels,
+                device,
+                name=f"CelebDFv1 level {level} {corruption} | {method.name}",
+                show_report=False,
+            )
+            rows.append(
+                {
+                    "level": level,
+                    "corruption": corruption,
+                    "method": method.name,
+                    **method_metrics,
+                }
+            )
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            rows.append(
+                {
+                    "level": level,
+                    "corruption": corruption,
+                    "method": method.name,
+                    "error": repr(exc),
+                }
+            )
     return rows
 
 
@@ -326,18 +372,7 @@ def cmd_eval_corruption_levels(args: argparse.Namespace) -> None:
     device = device_arg(args.device)
     seed_everything(args.seed)
     train_feats, train_labels, _ = load_feature_file(args.train_features)
-    model = train_linear_probe(
-        train_feats,
-        train_labels,
-        device=device,
-        epochs=args.epochs,
-        batch_size=args.train_batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    Path(args.model_output).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.model_output)
-    print("saved model to:", args.model_output)
+    model = load_or_train_linear_probe(args, train_feats, train_labels, device)
 
     rows = [
         {
