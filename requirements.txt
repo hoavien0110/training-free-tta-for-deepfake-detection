@@ -1,0 +1,8 @@
+numpy
+pandas
+torch
+scikit-learn
+tqdm
+Pillow
+opencv-python
+open_clip_torch

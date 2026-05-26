@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Large experiment artifacts
+*.pt
+*.pth
+*.ckpt
+*.csv
+runs/
+outputs/
+processed_output/
