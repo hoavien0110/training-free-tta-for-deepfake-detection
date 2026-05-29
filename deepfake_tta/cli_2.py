@@ -56,6 +56,36 @@ def load_or_train_linear_probe(
     return model
 
 
+def select_balanced_train_subset(
+    train_feats: torch.Tensor,
+    train_labels: torch.Tensor,
+    seed: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    labels = train_labels.long()
+    counts = torch.bincount(labels, minlength=2)
+    keep_per_class = int(counts.min().item())
+    if keep_per_class <= 0:
+        raise ValueError(f"Cannot balance labels with counts: {counts.tolist()}")
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    selected = []
+    for cls_idx in range(len(counts)):
+        cls_indices = torch.where(labels == cls_idx)[0]
+        perm = torch.randperm(len(cls_indices), generator=generator)
+        selected.append(cls_indices[perm[:keep_per_class]])
+
+    selected_indices = torch.cat(selected)
+    selected_indices = selected_indices[torch.randperm(len(selected_indices), generator=generator)]
+    balanced_feats = train_feats[selected_indices].contiguous()
+    balanced_labels = train_labels[selected_indices].contiguous()
+
+    print("balanced train subset:")
+    print("original label counts [REAL, FAKE]:", counts.tolist())
+    print("balanced label counts [REAL, FAKE]:", torch.bincount(balanced_labels.long(), minlength=2).tolist())
+    return balanced_feats, balanced_labels
+
+
 def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train_labels: torch.Tensor):
     methods = []
     for method_name in args.tta_methods:
@@ -162,7 +192,19 @@ def cmd_eval_template(args: argparse.Namespace) -> None:
     seed_everything(args.seed)
 
     train_feats, train_labels, _ = load_feature_file(args.train_features)
-    model = load_or_train_linear_probe(args, train_feats, train_labels, device)
+    model_train_feats = train_feats
+    model_train_labels = train_labels
+    if args.balance_train_labels and not args.load_model:
+        model_train_feats, model_train_labels = select_balanced_train_subset(train_feats, train_labels, args.seed)
+    elif args.balance_train_labels and args.load_model:
+        print("--balance-train-labels ignored because --load-model was provided.")
+
+    method_train_feats = train_feats
+    method_train_labels = train_labels
+    if args.balance_method_fit:
+        method_train_feats, method_train_labels = select_balanced_train_subset(train_feats, train_labels, args.seed)
+
+    model = load_or_train_linear_probe(args, model_train_feats, model_train_labels, device)
 
     feature_root = Path(args.feature_root)
     feature_paths = [
@@ -198,7 +240,7 @@ def cmd_eval_template(args: argparse.Namespace) -> None:
         )
 
     for feature_path in feature_paths:
-        rows.extend(evaluate_feature_file(args, feature_path, model, train_feats, train_labels, device))
+        rows.extend(evaluate_feature_file(args, feature_path, model, method_train_feats, method_train_labels, device))
 
     results = pd.DataFrame(rows)
     Path(args.results_output).parent.mkdir(parents=True, exist_ok=True)
@@ -238,6 +280,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show-report", action="store_true")
     p.add_argument("--continue-on-error", action="store_true")
     p.add_argument("--include-train-eval", action="store_true")
+    p.add_argument(
+        "--balance-train-labels",
+        action="store_true",
+        help="Before training a new linear probe, undersample train features to equal REAL/FAKE counts.",
+    )
+    p.add_argument(
+        "--balance-method-fit",
+        action="store_true",
+        help="Also fit TTA methods on an equal-label train subset instead of the full imbalanced train set.",
+    )
     p.set_defaults(func=cmd_eval_template)
 
     return parser
