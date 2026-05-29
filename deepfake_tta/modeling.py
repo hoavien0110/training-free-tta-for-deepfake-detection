@@ -9,6 +9,7 @@ from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     classification_report,
+    confusion_matrix,
     f1_score,
     roc_auc_score,
     roc_curve,
@@ -110,6 +111,7 @@ def evaluate_scores(
     show_report: bool = True,
 ) -> dict[str, float]:
     eer, eer_threshold = calculate_eer(y_true, y_score)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     metrics = {
         "acc": accuracy_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred, average="macro"),
@@ -117,6 +119,10 @@ def evaluate_scores(
         "ap": average_precision_score(y_true, y_score),
         "eer": eer,
         "eer_threshold": eer_threshold,
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
     }
 
     print(f"\n{name}")

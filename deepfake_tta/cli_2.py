@@ -86,6 +86,21 @@ def select_balanced_train_subset(
     return balanced_feats, balanced_labels
 
 
+def shuffle_train_data(
+    train_feats: torch.Tensor,
+    train_labels: torch.Tensor,
+    seed: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(train_labels), generator=generator)
+    shuffled_feats = train_feats[indices].contiguous()
+    shuffled_labels = train_labels[indices].contiguous()
+    print("shuffled train data before training/method fit")
+    print("label counts [REAL, FAKE]:", torch.bincount(shuffled_labels.long(), minlength=2).tolist())
+    return shuffled_feats, shuffled_labels
+
+
 def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train_labels: torch.Tensor):
     methods = []
     for method_name in args.tta_methods:
@@ -192,6 +207,9 @@ def cmd_eval_template(args: argparse.Namespace) -> None:
     seed_everything(args.seed)
 
     train_feats, train_labels, _ = load_feature_file(args.train_features)
+    if args.shuffle_train_before_fit:
+        train_feats, train_labels = shuffle_train_data(train_feats, train_labels, args.seed)
+
     model_train_feats = train_feats
     model_train_labels = train_labels
     if args.balance_train_labels and not args.load_model:
@@ -284,6 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--balance-train-labels",
         action="store_true",
         help="Before training a new linear probe, undersample train features to equal REAL/FAKE counts.",
+    )
+    p.add_argument(
+        "--shuffle-train-before-fit",
+        action="store_true",
+        help="Shuffle train feature tensors once after loading, before training and TTA method fit.",
     )
     p.add_argument(
         "--balance-method-fit",
