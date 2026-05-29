@@ -108,12 +108,92 @@ Chon TTA method bang `--tta-methods`. Cac method hien co:
 - `dota`: online diagonal Gaussian distribution adaptation
 - `freetta`: source-free online EM adaptation tren test stream
 - `dynaprompt`: prompt-free proxy bang online logit calibration
+- `compact_cache_adapter`: compact source cache, khong random
+- `online_confident_cache_adapter`: source cache confident + online dynamic target cache
+- `prototype_linear_tta`: prototype anchor + update linear head
 
 ```bash
 python -m deepfake_tta.cli train-eval \
   --train-features /kaggle/input/datasets/vhonghoavin/deepfakebench-features/ffpp_train_features.pt \
   --test-features /kaggle/input/datasets/vhonghoavin/deepfakebench-features/ffpp-color-constrast-5.pt \
   --tta-methods tip_adapter boost_adapter crg dmn dpe dota freetta bca dynaprompt
+```
+
+## Kaggle: chay tat ca phuong phap bang bash
+
+Clone branch `dev` va cai editable:
+
+```bash
+git clone -b dev https://github.com/hoavien0110/training-free-tta-for-deepfake-detection.git
+cd training-free-tta-for-deepfake-detection
+pip install -q -e . --no-deps
+```
+
+Kiem tra GPU va feature files:
+
+```bash
+python - <<'PY'
+import torch
+print("cuda:", torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+PY
+
+ls /kaggle/input/datasets/vhonghoavin/deepfakebench-features | head
+```
+
+Neu da co linear probe checkpoint, chay evaluate tat ca method tren 5 levels:
+
+```bash
+python -m deepfake_tta.cli eval-corruption-levels \
+  --feature-dir /kaggle/input/datasets/vhonghoavin/deepfakebench-features \
+  --train-features /kaggle/input/datasets/vhonghoavin/deepfakebench-features/ffpp_train_features.pt \
+  --load-model /kaggle/working/ufd_linear_probe_ffpp_all_levels.pt \
+  --levels 1 2 3 4 5 \
+  --corruptions color_contrast color_saturation gaussian_blur resize \
+  --tta-methods \
+    tip_adapter \
+    boost_adapter \
+    compact_cache_adapter \
+    online_confident_cache_adapter \
+    crg \
+    dmn \
+    dpe \
+    dota \
+    freetta \
+    bca \
+    dynaprompt \
+    prototype_linear_tta \
+  --method-cache-dir /kaggle/working/tta_method_cache \
+  --continue-on-error \
+  --device cuda \
+  --results-output /kaggle/working/all_methods_results.csv
+```
+
+Neu chua co checkpoint, bo `--load-model`; CLI se train linear probe mot lan roi save vao `--model-output`:
+
+```bash
+python -m deepfake_tta.cli eval-corruption-levels \
+  --feature-dir /kaggle/input/datasets/vhonghoavin/deepfakebench-features \
+  --train-features /kaggle/input/datasets/vhonghoavin/deepfakebench-features/ffpp_train_features.pt \
+  --model-output /kaggle/working/ufd_linear_probe_ffpp_all_levels.pt \
+  --levels 1 2 3 4 5 \
+  --corruptions color_contrast color_saturation gaussian_blur resize \
+  --tta-methods tip_adapter boost_adapter compact_cache_adapter online_confident_cache_adapter bca dpe \
+  --method-cache-dir /kaggle/working/tta_method_cache \
+  --continue-on-error \
+  --device cuda \
+  --results-output /kaggle/working/all_methods_results.csv
+```
+
+Doc nhanh ket qua:
+
+```bash
+python - <<'PY'
+import pandas as pd
+df = pd.read_csv("/kaggle/working/all_methods_results.csv")
+print(df.sort_values(["level", "corruption", "method"]).head(30))
+print(df.groupby("method")[["acc", "f1", "auc", "ap", "eer"]].mean(numeric_only=True).sort_values("f1", ascending=False))
+PY
 ```
 
 ## Evaluate CelebDFv1 corruption theo level
