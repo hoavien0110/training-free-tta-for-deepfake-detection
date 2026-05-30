@@ -59,6 +59,11 @@ def add_common_train_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Record method errors in the results CSV and continue evaluating other methods.",
     )
+    parser.add_argument(
+        "--shuffle-test-features",
+        action="store_true",
+        help="Shuffle test features and labels together before evaluation. Useful for order-sensitive online TTA.",
+    )
 
 
 def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train_labels: torch.Tensor):
@@ -76,6 +81,26 @@ def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train
     for method in methods:
         method.fit(train_feats, train_labels)
     return methods
+
+
+def maybe_shuffle_test_features(
+    args: argparse.Namespace,
+    feats: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    salt: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not getattr(args, "shuffle_test_features", False):
+        return feats, labels
+
+    generator = torch.Generator()
+    generator.manual_seed(int(args.seed) + int(salt))
+    indices = torch.randperm(len(labels), generator=generator)
+    shuffled_feats = feats[indices].contiguous()
+    shuffled_labels = labels[indices].contiguous()
+    print("shuffled test features with seed:", int(args.seed) + int(salt))
+    print("label counts [REAL, FAKE]:", torch.bincount(shuffled_labels.long(), minlength=2).tolist())
+    return shuffled_feats, shuffled_labels
 
 
 def load_or_train_linear_probe(
@@ -236,6 +261,7 @@ def cmd_train_eval(args: argparse.Namespace) -> None:
 
     for feature_path in args.test_features:
         feats, labels, payload = load_feature_file(feature_path)
+        feats, labels = maybe_shuffle_test_features(args, feats, labels, salt=len(rows))
         dataset_name = payload.get("dataset_name", Path(feature_path).stem)
         probe_metrics = evaluate_probe(
             model,
@@ -324,6 +350,8 @@ def evaluate_corruption_feature(
 ) -> list[dict]:
     feature_path = Path(args.feature_dir) / f"celebdfv1_level{level}_{corruption}_features.pt"
     feats, labels, _ = load_feature_file(str(feature_path))
+    salt = level * 1000 + sum(ord(ch) for ch in corruption)
+    feats, labels = maybe_shuffle_test_features(args, feats, labels, salt=salt)
     rows = []
     probe_metrics = evaluate_probe(
         model,
