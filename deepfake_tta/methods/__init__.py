@@ -8,6 +8,7 @@ from deepfake_tta.methods.dota import DOTA, DOTAConfig
 from deepfake_tta.methods.dpe import DPE, DPEConfig
 from deepfake_tta.methods.dynaprompt import DynaPrompt, DynaPromptConfig
 from deepfake_tta.methods.freetta import FreeTTA, FreeTTAConfig
+from deepfake_tta.methods.freetta_linear_ensemble import FreeTTALinearEnsemble, FreeTTALinearEnsembleConfig
 from deepfake_tta.methods.online_confident_cache_adapter import (
     OnlineConfidentCacheAdapter,
     OnlineConfidentCacheAdapterConfig,
@@ -36,6 +37,8 @@ __all__ = [
     "DynaPromptConfig",
     "FreeTTA",
     "FreeTTAConfig",
+    "FreeTTALinearEnsemble",
+    "FreeTTALinearEnsembleConfig",
     "OnlineConfidentCacheAdapter",
     "OnlineConfidentCacheAdapterConfig",
     "PrototypeLinearTTA",

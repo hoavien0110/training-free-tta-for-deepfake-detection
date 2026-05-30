@@ -9,6 +9,10 @@ from deepfake_tta.methods.dota import DOTA, DOTAConfig
 from deepfake_tta.methods.dpe import DPE, DPEConfig
 from deepfake_tta.methods.dynaprompt import DynaPrompt, DynaPromptConfig
 from deepfake_tta.methods.freetta import FreeTTA, FreeTTAConfig
+from deepfake_tta.methods.freetta_linear_ensemble import (
+    FreeTTALinearEnsemble,
+    FreeTTALinearEnsembleConfig,
+)
 from deepfake_tta.methods.online_confident_cache_adapter import (
     OnlineConfidentCacheAdapter,
     OnlineConfidentCacheAdapterConfig,
@@ -26,6 +30,7 @@ AVAILABLE_TTA_METHODS = (
     "dpe",
     "dota",
     "freetta",
+    "freetta_linear_ensemble",
     "bca",
     "dynaprompt",
     "prototype_linear_tta",
@@ -101,6 +106,14 @@ def create_tta_method(
         return DOTA(DOTAConfig(batch_size=test_batch_size))
     if name == "freetta":
         return FreeTTA(FreeTTAConfig(batch_size=test_batch_size))
+    if name == "freetta_linear_ensemble":
+        return FreeTTALinearEnsemble(
+            FreeTTALinearEnsembleConfig(
+                batch_size=test_batch_size,
+                linear_weight=0.3,
+                freetta_weight=0.7,
+            )
+        )
     if name == "dynaprompt":
         return DynaPrompt(DynaPromptConfig(batch_size=test_batch_size))
     if name == "prototype_linear_tta":
