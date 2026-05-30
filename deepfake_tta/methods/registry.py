@@ -13,6 +13,12 @@ from deepfake_tta.methods.freetta_linear_ensemble import (
     FreeTTALinearEnsemble,
     FreeTTALinearEnsembleConfig,
 )
+from deepfake_tta.methods.lightweight_wrappers import (
+    LinearEnsembleConfig,
+    LinearEnsembleWrapper,
+    PriorBalancedConfig,
+    PriorBalancedWrapper,
+)
 from deepfake_tta.methods.online_confident_cache_adapter import (
     OnlineConfidentCacheAdapter,
     OnlineConfidentCacheAdapterConfig,
@@ -31,6 +37,16 @@ AVAILABLE_TTA_METHODS = (
     "dota",
     "freetta",
     "freetta_linear_ensemble",
+    "freetta_balanced",
+    "freetta_linear_ensemble_balanced",
+    "bca_balanced",
+    "bca_linear_ensemble_balanced",
+    "dpe_balanced",
+    "dpe_linear_ensemble_balanced",
+    "dota_balanced",
+    "dota_linear_ensemble_balanced",
+    "prototype_linear_tta_balanced",
+    "online_cache_10_balanced",
     "bca",
     "dynaprompt",
     "prototype_linear_tta",
@@ -46,6 +62,28 @@ def create_tta_method(
     cache_batch_size: int = 8192,
     method_cache_dir: str | None = None,
 ):
+    def prior_balanced(inner, wrapper_name: str, strength: float = 0.7):
+        return PriorBalancedWrapper(
+            inner,
+            name=wrapper_name,
+            config=PriorBalancedConfig(
+                batch_size=test_batch_size,
+                target_prior=(0.5, 0.5),
+                strength=strength,
+            ),
+        )
+
+    def linear_ensemble(inner, wrapper_name: str, linear_weight: float = 0.3, inner_weight: float = 0.7):
+        return LinearEnsembleWrapper(
+            inner,
+            name=wrapper_name,
+            config=LinearEnsembleConfig(
+                batch_size=test_batch_size,
+                linear_weight=linear_weight,
+                inner_weight=inner_weight,
+            ),
+        )
+
     if name == "tip_adapter":
         return TipAdapter(
             TipAdapterConfig(
@@ -114,8 +152,146 @@ def create_tta_method(
                 freetta_weight=0.7,
             )
         )
+    if name == "freetta_balanced":
+        return prior_balanced(
+            FreeTTA(FreeTTAConfig(batch_size=test_batch_size, base_weight=0.35)),
+            "freetta_balanced",
+            strength=0.8,
+        )
+    if name == "freetta_linear_ensemble_balanced":
+        return prior_balanced(
+            FreeTTALinearEnsemble(
+                FreeTTALinearEnsembleConfig(
+                    batch_size=test_batch_size,
+                    linear_weight=0.25,
+                    freetta_weight=0.75,
+                )
+            ),
+            "freetta_linear_ensemble_balanced",
+            strength=0.7,
+        )
     if name == "dynaprompt":
         return DynaPrompt(DynaPromptConfig(batch_size=test_batch_size))
     if name == "prototype_linear_tta":
         return PrototypeLinearTTA(PrototypeLinearTTAConfig(batch_size=test_batch_size))
+    if name == "bca_balanced":
+        return prior_balanced(
+            BCA(
+                BCAConfig(
+                    batch_size=test_batch_size,
+                    base_weight=0.6,
+                    prior_momentum=0.98,
+                    prototype_momentum=0.99,
+                )
+            ),
+            "bca_balanced",
+            strength=0.7,
+        )
+    if name == "bca_linear_ensemble_balanced":
+        return prior_balanced(
+            linear_ensemble(
+                BCA(
+                    BCAConfig(
+                        batch_size=test_batch_size,
+                        base_weight=0.55,
+                        prior_momentum=0.98,
+                        prototype_momentum=0.99,
+                    )
+                ),
+                "bca_linear_ensemble",
+                linear_weight=0.35,
+                inner_weight=0.65,
+            ),
+            "bca_linear_ensemble_balanced",
+            strength=0.7,
+        )
+    if name == "dpe_balanced":
+        return prior_balanced(
+            DPE(DPEConfig(batch_size=test_batch_size, base_weight=0.55, visual_momentum=0.98)),
+            "dpe_balanced",
+            strength=0.7,
+        )
+    if name == "dpe_linear_ensemble_balanced":
+        return prior_balanced(
+            linear_ensemble(
+                DPE(DPEConfig(batch_size=test_batch_size, base_weight=0.55, visual_momentum=0.98)),
+                "dpe_linear_ensemble",
+                linear_weight=0.35,
+                inner_weight=0.65,
+            ),
+            "dpe_linear_ensemble_balanced",
+            strength=0.7,
+        )
+    if name == "dota_balanced":
+        return prior_balanced(
+            DOTA(
+                DOTAConfig(
+                    batch_size=test_batch_size,
+                    base_weight=0.55,
+                    momentum=0.99,
+                    confidence_threshold=0.0,
+                )
+            ),
+            "dota_balanced",
+            strength=0.8,
+        )
+    if name == "dota_linear_ensemble_balanced":
+        return prior_balanced(
+            linear_ensemble(
+                DOTA(
+                    DOTAConfig(
+                        batch_size=test_batch_size,
+                        base_weight=0.55,
+                        momentum=0.99,
+                        confidence_threshold=0.0,
+                    )
+                ),
+                "dota_linear_ensemble",
+                linear_weight=0.4,
+                inner_weight=0.6,
+            ),
+            "dota_linear_ensemble_balanced",
+            strength=0.7,
+        )
+    if name == "prototype_linear_tta_balanced":
+        return prior_balanced(
+            PrototypeLinearTTA(
+                PrototypeLinearTTAConfig(
+                    batch_size=test_batch_size,
+                    lr=5e-6,
+                    anchor_weight=0.2,
+                    reg_weight=0.2,
+                    balance_weight=0.1,
+                    entropy_weight=0.0,
+                    target_prior=(0.5, 0.5),
+                )
+            ),
+            "prototype_linear_tta_balanced",
+            strength=0.6,
+        )
+    if name == "online_cache_10_balanced":
+        cache_path = None
+        if method_cache_dir:
+            cache_path = f"{method_cache_dir}/online_cache_10_balanced_source.pt"
+        return prior_balanced(
+            OnlineConfidentCacheAdapter(
+                OnlineConfidentCacheAdapterConfig(
+                    beta=beta,
+                    batch_size=test_batch_size,
+                    source_cache_ratio=0.1,
+                    alpha_source=0.25,
+                    alpha_dynamic=0.2,
+                    add_threshold=0.92,
+                    max_entropy=0.3,
+                    entropy_score_weight=0.25,
+                    use_threshold=0.88,
+                    agreement_only=True,
+                    max_dynamic_per_class=1024,
+                    cache_path=cache_path,
+                    save_cache=True,
+                )
+            ),
+            "online_cache_10_balanced",
+            strength=0.6,
+        )
     raise ValueError(f"Unknown TTA method: {name}")

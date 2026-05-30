@@ -9,6 +9,12 @@ from deepfake_tta.methods.dpe import DPE, DPEConfig
 from deepfake_tta.methods.dynaprompt import DynaPrompt, DynaPromptConfig
 from deepfake_tta.methods.freetta import FreeTTA, FreeTTAConfig
 from deepfake_tta.methods.freetta_linear_ensemble import FreeTTALinearEnsemble, FreeTTALinearEnsembleConfig
+from deepfake_tta.methods.lightweight_wrappers import (
+    LinearEnsembleConfig,
+    LinearEnsembleWrapper,
+    PriorBalancedConfig,
+    PriorBalancedWrapper,
+)
 from deepfake_tta.methods.online_confident_cache_adapter import (
     OnlineConfidentCacheAdapter,
     OnlineConfidentCacheAdapterConfig,
@@ -39,8 +45,12 @@ __all__ = [
     "FreeTTAConfig",
     "FreeTTALinearEnsemble",
     "FreeTTALinearEnsembleConfig",
+    "LinearEnsembleConfig",
+    "LinearEnsembleWrapper",
     "OnlineConfidentCacheAdapter",
     "OnlineConfidentCacheAdapterConfig",
+    "PriorBalancedConfig",
+    "PriorBalancedWrapper",
     "PrototypeLinearTTA",
     "PrototypeLinearTTAConfig",
     "TTAMethod",
