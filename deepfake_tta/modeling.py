@@ -25,6 +25,30 @@ class LinearProbe(nn.Module):
         return self.fc(x).squeeze(1)
 
 
+class OSDLinearProbe(nn.Module):
+    """Feature-space Orthogonal Subspace Decomposition linear probe.
+
+    This is a precomputed-feature adaptation of OSD/Effort: estimate a frozen
+    principal semantic subspace with SVD/PCA, then train the detector on the
+    orthogonal residual subspace where forgery-specific cues should live.
+    """
+
+    def __init__(self, dim: int, center: torch.Tensor, basis: torch.Tensor):
+        super().__init__()
+        self.fc = nn.Linear(dim, 1)
+        self.register_buffer("center", center.float())
+        self.register_buffer("basis", basis.float())
+
+    def residualize(self, x: torch.Tensor) -> torch.Tensor:
+        centered = x - self.center.to(x.device)
+        basis = self.basis.to(x.device)
+        semantic = (centered @ basis) @ basis.T
+        return centered - semantic
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(self.residualize(x)).squeeze(1)
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -90,6 +114,87 @@ def train_linear_probe(
 
         print(
             f"Epoch {epoch + 1}/{epochs} | "
+            f"loss={total_loss / total:.4f} | train_acc={total_correct / total:.4f}"
+        )
+
+    return model
+
+
+def build_osd_subspace(
+    train_feats: torch.Tensor,
+    rank: int = 128,
+    max_samples: int = 100_000,
+    seed: int = 42,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    feats = train_feats.float()
+    if len(feats) > max_samples:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        indices = torch.randperm(len(feats), generator=generator)[:max_samples]
+        feats = feats[indices]
+
+    center = feats.mean(dim=0)
+    centered = feats - center
+    rank = min(rank, centered.shape[1], centered.shape[0] - 1)
+    if rank <= 0:
+        raise ValueError(f"Invalid OSD rank={rank} for centered shape={tuple(centered.shape)}")
+
+    _, _, vh = torch.linalg.svd(centered, full_matrices=False)
+    basis = vh[:rank].T.contiguous()
+    return center.cpu(), basis.cpu()
+
+
+def train_osd_linear_probe(
+    train_feats: torch.Tensor,
+    train_labels: torch.Tensor,
+    device: str,
+    epochs: int = 200,
+    batch_size: int = 256,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    osd_rank: int = 128,
+    osd_max_samples: int = 100_000,
+    seed: int = 42,
+) -> OSDLinearProbe:
+    center, basis = build_osd_subspace(
+        train_feats,
+        rank=osd_rank,
+        max_samples=osd_max_samples,
+        seed=seed,
+    )
+    model = OSDLinearProbe(train_feats.shape[1], center=center, basis=basis).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.BCEWithLogitsLoss()
+    x_train = train_feats.to(device)
+    y_train = train_labels.float().to(device)
+
+    print("OSD rank:", basis.shape[1])
+    for epoch in range(epochs):
+        model.train()
+        permutation = torch.randperm(len(x_train), device=device)
+        total_loss = 0.0
+        total_correct = 0
+        total = 0
+
+        for start in range(0, len(x_train), batch_size):
+            idx = permutation[start : start + batch_size]
+            xb = x_train[idx]
+            yb = y_train[idx]
+            logits = model(xb)
+            loss = criterion(logits, yb)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            current_batch_size = len(xb)
+            preds = (torch.sigmoid(logits) >= 0.5).long()
+            total_loss += loss.item() * current_batch_size
+            total_correct += (preds == yb.long()).sum().item()
+            total += current_batch_size
+
+        print(
+            f"OSD Epoch {epoch + 1}/{epochs} | "
             f"loss={total_loss / total:.4f} | train_acc={total_correct / total:.4f}"
         )
 
