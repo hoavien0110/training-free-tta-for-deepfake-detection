@@ -20,6 +20,37 @@ from deepfake_tta.modeling import (
 )
 
 
+def select_balanced_subset(
+    feats: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    seed: int,
+    split_name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    labels = labels.long()
+    counts = torch.bincount(labels, minlength=2)
+    keep_per_class = int(counts.min().item())
+    if keep_per_class <= 0:
+        raise ValueError(f"Cannot balance {split_name} with label counts: {counts.tolist()}")
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    selected = []
+    for cls_idx in range(len(counts)):
+        cls_indices = torch.where(labels == cls_idx)[0]
+        perm = torch.randperm(len(cls_indices), generator=generator)
+        selected.append(cls_indices[perm[:keep_per_class]])
+
+    indices = torch.cat(selected)
+    indices = indices[torch.randperm(len(indices), generator=generator)]
+    balanced_feats = feats[indices].contiguous()
+    balanced_labels = labels[indices].contiguous()
+    print(f"balanced {split_name}:")
+    print("original label counts [REAL, FAKE]:", counts.tolist())
+    print("balanced label counts [REAL, FAKE]:", torch.bincount(balanced_labels.long(), minlength=2).tolist())
+    return balanced_feats, balanced_labels
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--feature-dir", default="/kaggle/working/ffpp_split_features")
@@ -36,6 +67,11 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--osd-rank", type=int, default=128)
     parser.add_argument("--osd-max-samples", type=int, default=100_000)
+    parser.add_argument(
+        "--balance-splits",
+        action="store_true",
+        help="Undersample train/val/test to equal REAL/FAKE counts before training and evaluation.",
+    )
     parser.add_argument(
         "--select-by-val-f1",
         action=argparse.BooleanOptionalAction,
@@ -67,6 +103,11 @@ def main() -> None:
     train_feats, train_labels, _ = load_feature_file(str(train_path))
     val_feats, val_labels, _ = load_feature_file(str(val_path))
     test_feats, test_labels, _ = load_feature_file(str(test_path))
+
+    if args.balance_splits:
+        train_feats, train_labels = select_balanced_subset(train_feats, train_labels, seed=args.seed + 11, split_name="train")
+        val_feats, val_labels = select_balanced_subset(val_feats, val_labels, seed=args.seed + 17, split_name="val")
+        test_feats, test_labels = select_balanced_subset(test_feats, test_labels, seed=args.seed + 23, split_name="test")
 
     models = []
     if not args.skip_linear:
@@ -140,6 +181,7 @@ def main() -> None:
                 {
                     "model": model_name,
                     "split": split_name,
+                    "balanced_splits": bool(args.balance_splits),
                     "selected_by_val_f1": bool(args.select_by_val_f1),
                     "best_val_f1": val_f1,
                     **metrics,
