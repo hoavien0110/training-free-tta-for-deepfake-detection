@@ -4,7 +4,6 @@ import json
 import urllib.request
 from pathlib import Path
 
-import open_clip
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -132,6 +131,8 @@ class ImageDataset(Dataset):
 
 
 def create_clip(model_name: str = "ViT-L-14", pretrained: str = "openai", device: str = "cuda"):
+    import open_clip
+
     model, _, preprocess = open_clip.create_model_and_transforms(
         model_name,
         pretrained=pretrained,
