@@ -63,6 +63,81 @@ def infer_feature_meta(path: Path, payload: dict) -> dict[str, object]:
     }
 
 
+def sample_id_from_path(path: str) -> str:
+    parts = Path(path).parts
+    anchors = ("original_sequences", "manipulated_sequences")
+    for anchor in anchors:
+        if anchor in parts:
+            idx = parts.index(anchor)
+            return "/".join(parts[idx:])
+    return "/".join(parts[-8:])
+
+
+def build_sample_index(payload: dict) -> dict[str, int]:
+    paths = payload.get("paths")
+    if paths is None:
+        raise ValueError("Feature payload does not contain paths, cannot align samples across corruptions.")
+    return {sample_id_from_path(path): idx for idx, path in enumerate(paths)}
+
+
+def interleave_by_blocks(real_ids: list[str], fake_ids: list[str], block_size: int) -> list[str]:
+    ordered = []
+    usable = min(len(real_ids), len(fake_ids))
+    usable = usable - (usable % block_size)
+    real_ids = real_ids[:usable]
+    fake_ids = fake_ids[:usable]
+    for start in range(0, usable, block_size):
+        ordered.extend(real_ids[start : start + block_size])
+        ordered.extend(fake_ids[start : start + block_size])
+    return ordered
+
+
+def build_aligned_balanced_ids(feature_files: list[Path], block_size: int) -> list[str]:
+    common_ids: set[str] | None = None
+    label_by_id = {}
+
+    for feature_path in feature_files:
+        payload = torch.load(feature_path, map_location="cpu")
+        sample_index = build_sample_index(payload)
+        ids = set(sample_index)
+        common_ids = ids if common_ids is None else common_ids & ids
+
+        labels = payload["labels"].long()
+        for sample_id, idx in sample_index.items():
+            label = int(labels[idx].item())
+            previous = label_by_id.get(sample_id)
+            if previous is not None and previous != label:
+                raise ValueError(f"Inconsistent label for sample {sample_id}: {previous} vs {label}")
+            label_by_id[sample_id] = label
+
+    if not common_ids:
+        raise ValueError("No common sample IDs found across feature files.")
+
+    real_ids = sorted(sample_id for sample_id in common_ids if label_by_id[sample_id] == 0)
+    fake_ids = sorted(sample_id for sample_id in common_ids if label_by_id[sample_id] == 1)
+    ordered_ids = interleave_by_blocks(real_ids, fake_ids, block_size)
+    if not ordered_ids:
+        raise ValueError(
+            f"Cannot build balanced aligned test set with block_size={block_size}. "
+            f"Common REAL={len(real_ids)}, FAKE={len(fake_ids)}"
+        )
+
+    print("aligned balanced test:")
+    print("common ids:", len(common_ids))
+    print("common label counts [REAL, FAKE]:", [len(real_ids), len(fake_ids)])
+    print("selected label counts [REAL, FAKE]:", [len(ordered_ids) // 2, len(ordered_ids) // 2])
+    print("block pattern:", block_size, "REAL then", block_size, "FAKE")
+    return ordered_ids
+
+
+def apply_aligned_ids(feats: torch.Tensor, labels: torch.Tensor, payload: dict, ordered_ids: list[str]):
+    sample_index = build_sample_index(payload)
+    indices = torch.tensor([sample_index[sample_id] for sample_id in ordered_ids], dtype=torch.long)
+    feats = feats[indices].contiguous()
+    labels = labels[indices].contiguous()
+    return feats, labels
+
+
 def load_probe_model(model_path: Path, dim: int, device: str):
     state = torch.load(model_path, map_location="cpu")
     if "center" in state and "basis" in state:
@@ -106,6 +181,17 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--show-report", action="store_true")
+    parser.add_argument(
+        "--balanced-aligned-test",
+        action="store_true",
+        help="Use the same balanced sample IDs for every corruption file.",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=10,
+        help="When --balanced-aligned-test is set, order samples as N REAL then N FAKE repeatedly.",
+    )
     args = parser.parse_args()
 
     device = device_arg(args.device)
@@ -122,11 +208,20 @@ def main() -> None:
     for path in model_files:
         print(" -", path)
 
+    aligned_ids = None
+    if args.balanced_aligned_test:
+        aligned_ids = build_aligned_balanced_ids(feature_files, args.block_size)
+
     rows = []
     loaded_models = {}
     for feature_path in feature_files:
         feats, labels, payload = load_feature_file(str(feature_path))
         meta = infer_feature_meta(feature_path, payload)
+        if aligned_ids is not None:
+            feats, labels = apply_aligned_ids(feats, labels, payload, aligned_ids)
+            print("after aligned balance:", feature_path.name)
+            print("features:", tuple(feats.shape))
+            print("label counts [REAL, FAKE]:", torch.bincount(labels.long(), minlength=2).tolist())
         dim = feats.shape[1]
 
         for model_path in model_files:
@@ -149,6 +244,8 @@ def main() -> None:
                     **meta,
                     "model": model_name,
                     "model_path": str(model_path),
+                    "balanced_aligned_test": bool(args.balanced_aligned_test),
+                    "block_size": int(args.block_size) if args.balanced_aligned_test else None,
                     **metrics,
                 }
             )
