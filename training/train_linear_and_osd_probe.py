@@ -36,6 +36,12 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--osd-rank", type=int, default=128)
     parser.add_argument("--osd-max-samples", type=int, default=100_000)
+    parser.add_argument(
+        "--select-by-val-f1",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the validation split to select the best epoch and decision threshold by macro F1.",
+    )
     parser.add_argument("--skip-linear", action="store_true")
     parser.add_argument("--skip-osd", action="store_true")
     args = parser.parse_args()
@@ -56,6 +62,7 @@ def main() -> None:
     linear_output = output_dir / "ffpp_linear_probe_split.pt"
     osd_output = output_dir / "ffpp_osd_linear_probe_split.pt"
     results_output = output_dir / "ffpp_split_train_results.csv"
+    threshold_output = output_dir / "ffpp_probe_thresholds.csv"
 
     train_feats, train_labels, _ = load_feature_file(str(train_path))
     val_feats, val_labels, _ = load_feature_file(str(val_path))
@@ -71,10 +78,13 @@ def main() -> None:
             batch_size=args.batch_size,
             lr=args.lr,
             weight_decay=args.weight_decay,
+            val_feats=val_feats if args.select_by_val_f1 else None,
+            val_labels=val_labels if args.select_by_val_f1 else None,
+            eval_batch_size=args.eval_batch_size,
         )
         torch.save(linear_model.state_dict(), linear_output)
         print("saved:", linear_output)
-        models.append(("linear_probe", linear_model))
+        models.append(("linear_probe", linear_model, linear_output))
 
     if not args.skip_osd:
         osd_model = train_osd_linear_probe(
@@ -88,18 +98,33 @@ def main() -> None:
             osd_rank=args.osd_rank,
             osd_max_samples=args.osd_max_samples,
             seed=args.seed,
+            val_feats=val_feats if args.select_by_val_f1 else None,
+            val_labels=val_labels if args.select_by_val_f1 else None,
+            eval_batch_size=args.eval_batch_size,
         )
         torch.save(osd_model.state_dict(), osd_output)
         print("saved:", osd_output)
-        models.append(("osd_linear_probe", osd_model))
+        models.append(("osd_linear_probe", osd_model, osd_output))
 
     rows = []
+    threshold_rows = []
     splits = [
         ("train", train_feats, train_labels),
         ("val", val_feats, val_labels),
         ("test", test_feats, test_labels),
     ]
-    for model_name, model in models:
+    for model_name, model, model_path in models:
+        threshold = float(getattr(model, "best_threshold_", 0.5) or 0.5)
+        val_f1 = getattr(model, "best_val_f1_", None)
+        threshold_rows.append(
+            {
+                "model": model_name,
+                "model_path": str(model_path),
+                "threshold": threshold,
+                "best_val_f1": val_f1,
+                "selected_by_val_f1": bool(args.select_by_val_f1),
+            }
+        )
         for split_name, feats, labels in splits:
             metrics = evaluate_probe(
                 model,
@@ -109,13 +134,27 @@ def main() -> None:
                 name=f"{model_name} | {split_name}",
                 batch_size=args.eval_batch_size,
                 show_report=False,
+                threshold=threshold,
             )
-            rows.append({"model": model_name, "split": split_name, **metrics})
+            rows.append(
+                {
+                    "model": model_name,
+                    "split": split_name,
+                    "selected_by_val_f1": bool(args.select_by_val_f1),
+                    "best_val_f1": val_f1,
+                    **metrics,
+                }
+            )
 
     results = pd.DataFrame(rows)
     results.to_csv(results_output, index=False)
     print(results)
     print("saved:", results_output)
+
+    thresholds = pd.DataFrame(threshold_rows)
+    thresholds.to_csv(threshold_output, index=False)
+    print(thresholds)
+    print("saved:", threshold_output)
 
 
 if __name__ == "__main__":

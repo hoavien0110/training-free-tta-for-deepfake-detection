@@ -81,12 +81,19 @@ def train_linear_probe(
     batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
+    val_feats: torch.Tensor | None = None,
+    val_labels: torch.Tensor | None = None,
+    eval_batch_size: int = 4096,
 ) -> LinearProbe:
     model = LinearProbe(train_feats.shape[1]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.BCEWithLogitsLoss()
     x_train = train_feats.to(device)
     y_train = train_labels.float().to(device)
+
+    best_state = None
+    best_val_f1 = -1.0
+    best_threshold = 0.5
 
     for epoch in range(epochs):
         model.train()
@@ -112,10 +119,28 @@ def train_linear_probe(
             total_correct += (preds == yb.long()).sum().item()
             total += current_batch_size
 
-        print(
+        log = (
             f"Epoch {epoch + 1}/{epochs} | "
             f"loss={total_loss / total:.4f} | train_acc={total_correct / total:.4f}"
         )
+
+        if val_feats is not None and val_labels is not None:
+            val_score = predict_probe_scores(model, val_feats, device, batch_size=eval_batch_size)
+            threshold, val_f1 = find_best_f1_threshold(val_labels.detach().cpu().numpy(), val_score)
+            log += f" | val_macro_f1={val_f1:.4f} | f1_threshold={threshold:.4f}"
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_threshold = threshold
+                best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+        print(log)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"loaded best val-F1 checkpoint | val_macro_f1={best_val_f1:.4f} | threshold={best_threshold:.4f}")
+
+    model.best_threshold_ = float(best_threshold)
+    model.best_val_f1_ = float(best_val_f1) if best_val_f1 >= 0 else None
 
     return model
 
@@ -155,6 +180,9 @@ def train_osd_linear_probe(
     osd_rank: int = 128,
     osd_max_samples: int = 100_000,
     seed: int = 42,
+    val_feats: torch.Tensor | None = None,
+    val_labels: torch.Tensor | None = None,
+    eval_batch_size: int = 4096,
 ) -> OSDLinearProbe:
     center, basis = build_osd_subspace(
         train_feats,
@@ -167,6 +195,10 @@ def train_osd_linear_probe(
     criterion = nn.BCEWithLogitsLoss()
     x_train = train_feats.to(device)
     y_train = train_labels.float().to(device)
+
+    best_state = None
+    best_val_f1 = -1.0
+    best_threshold = 0.5
 
     print("OSD rank:", basis.shape[1])
     for epoch in range(epochs):
@@ -193,10 +225,28 @@ def train_osd_linear_probe(
             total_correct += (preds == yb.long()).sum().item()
             total += current_batch_size
 
-        print(
+        log = (
             f"OSD Epoch {epoch + 1}/{epochs} | "
             f"loss={total_loss / total:.4f} | train_acc={total_correct / total:.4f}"
         )
+
+        if val_feats is not None and val_labels is not None:
+            val_score = predict_probe_scores(model, val_feats, device, batch_size=eval_batch_size)
+            threshold, val_f1 = find_best_f1_threshold(val_labels.detach().cpu().numpy(), val_score)
+            log += f" | val_macro_f1={val_f1:.4f} | f1_threshold={threshold:.4f}"
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_threshold = threshold
+                best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+        print(log)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"loaded best OSD val-F1 checkpoint | val_macro_f1={best_val_f1:.4f} | threshold={best_threshold:.4f}")
+
+    model.best_threshold_ = float(best_threshold)
+    model.best_val_f1_ = float(best_val_f1) if best_val_f1 >= 0 else None
 
     return model
 
@@ -239,6 +289,43 @@ def evaluate_scores(
 
 
 @torch.no_grad()
+def predict_probe_scores(
+    model: LinearProbe,
+    feats: torch.Tensor,
+    device: str,
+    batch_size: int = 4096,
+) -> np.ndarray:
+    model.eval()
+    scores = []
+    for start in range(0, len(feats), batch_size):
+        xb = feats[start : start + batch_size].to(device)
+        scores.append(torch.sigmoid(model(xb)).cpu())
+    return torch.cat(scores).numpy()
+
+
+def find_best_f1_threshold(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    average: str = "macro",
+    max_candidates: int = 1001,
+) -> tuple[float, float]:
+    y_true = np.asarray(y_true)
+    y_score = np.asarray(y_score)
+    quantiles = np.linspace(0.0, 1.0, max_candidates)
+    candidates = np.unique(np.quantile(y_score, quantiles))
+    candidates = np.unique(np.concatenate([candidates, np.array([0.5], dtype=y_score.dtype)]))
+
+    best_threshold = 0.5
+    best_f1 = -1.0
+    for threshold in candidates:
+        y_pred = (y_score >= threshold).astype(int)
+        current_f1 = f1_score(y_true, y_pred, average=average, zero_division=0)
+        if current_f1 > best_f1:
+            best_f1 = float(current_f1)
+            best_threshold = float(threshold)
+    return best_threshold, best_f1
+
+
 def evaluate_probe(
     model: LinearProbe,
     feats: torch.Tensor,
@@ -247,16 +334,14 @@ def evaluate_probe(
     name: str = "test",
     batch_size: int = 4096,
     show_report: bool = True,
+    threshold: float = 0.5,
 ) -> dict[str, float]:
-    model.eval()
-    scores = []
-    for start in range(0, len(feats), batch_size):
-        xb = feats[start : start + batch_size].to(device)
-        scores.append(torch.sigmoid(model(xb)).cpu())
-    y_score = torch.cat(scores).numpy()
-    y_true = labels.numpy()
-    y_pred = (y_score >= 0.5).astype(int)
-    return evaluate_scores(y_true, y_score, y_pred, name=name, show_report=show_report)
+    y_score = predict_probe_scores(model, feats, device, batch_size=batch_size)
+    y_true = labels.detach().cpu().numpy()
+    y_pred = (y_score >= threshold).astype(int)
+    metrics = evaluate_scores(y_true, y_score, y_pred, name=name, show_report=show_report)
+    metrics["threshold"] = float(threshold)
+    return metrics
 
 
 def build_tip_cache(
