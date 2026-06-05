@@ -61,11 +61,52 @@ def remap_to_corruption_root(
     return out
 
 
+def parse_root_map(entries: list[str] | None) -> dict[str, Path]:
+    root_map = {}
+    for entry in entries or []:
+        if "=" not in entry:
+            raise ValueError(f"Invalid --corruption-root-map entry: {entry}. Expected name=/path")
+        name, value = entry.split("=", 1)
+        root_map[name.strip()] = Path(value.strip())
+    return root_map
+
+
+def resolve_corruption_level_root(
+    *,
+    corruption: str,
+    level: int,
+    default_root: str | Path,
+    root_map: dict[str, Path],
+) -> Path:
+    root = root_map.get(corruption, Path(default_root))
+    candidates = [
+        root / corruption / f"level_{level}",
+        root / corruption / "FaceForensics++",
+        root / corruption,
+        root / f"level_{level}",
+        root / "FaceForensics++",
+        root,
+    ]
+    for candidate in candidates:
+        if (candidate / "manipulated_sequences").exists() or (candidate / "original_sequences").exists():
+            return candidate
+
+    print("could not auto-detect FaceForensics++ corruption root. tried:")
+    for candidate in candidates:
+        print(" -", candidate)
+    return candidates[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv-path", default="/kaggle/input/datasets/jamestashvik/deepfakebench/deepfakebench_dataset.csv")
     parser.add_argument("--deepfakebench-root", default="/kaggle/input/datasets/jamestashvik/deepfakebench/DeepFakeBench")
     parser.add_argument("--corruption-root", default="/kaggle/input/ffpp-corruption-level-2")
+    parser.add_argument(
+        "--corruption-root-map",
+        nargs="*",
+        help="Optional per-corruption roots, e.g. color_contrast=/kaggle/input/ff-color-contrast-5",
+    )
     parser.add_argument("--split-root")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
     parser.add_argument("--level", type=int, default=2)
@@ -80,6 +121,7 @@ def main() -> None:
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--allow-missing", action="store_true")
     args = parser.parse_args()
+    root_map = parse_root_map(args.corruption_root_map)
 
     device = resolve_device(args.device)
     if device == "cuda":
@@ -111,7 +153,12 @@ def main() -> None:
             saved.append(output_path)
             continue
 
-        corruption_level_root = Path(args.corruption_root) / corruption / f"level_{args.level}"
+        corruption_level_root = resolve_corruption_level_root(
+            corruption=corruption,
+            level=args.level,
+            default_root=args.corruption_root,
+            root_map=root_map,
+        )
         print(f"\nExtracting FF++ {args.split} | level {args.level} | {corruption}", flush=True)
         df = remap_to_corruption_root(
             base_df,
