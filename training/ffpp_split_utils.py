@@ -36,18 +36,16 @@ def resolve_split_json(split_name: str, dataset_root: str | Path, split_root: st
     )
 
     for candidate in candidates:
+        print("checking split candidate:", candidate, flush=True)
         if candidate.exists():
-            return candidate
-
-    for candidate in dataset_root.rglob(f"{split_name}.json"):
-        if "split" in str(candidate).lower():
+            print("found split json:", candidate, flush=True)
             return candidate
 
     out_dir = Path("/kaggle/working/ffpp_splits")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{split_name}.json"
     if not out_path.exists():
-        print(f"split json not found locally, downloading {split_name}.json")
+        print(f"split json not found in known locations, downloading {split_name}.json", flush=True)
         try:
             urllib.request.urlretrieve(SPLIT_URLS[split_name], out_path)
         except Exception as exc:
@@ -55,14 +53,17 @@ def resolve_split_json(split_name: str, dataset_root: str | Path, split_root: st
                 f"Cannot find or download {split_name}.json. "
                 "Set SPLIT_ROOT to a folder containing train.json, val.json, test.json."
             ) from exc
+    else:
+        print("using cached split json:", out_path, flush=True)
     return out_path
 
 
 def load_split_pairs(split_name: str, dataset_root: str | Path, split_root: str | Path | None = None):
+    print("resolving split json:", split_name, flush=True)
     split_path = resolve_split_json(split_name, dataset_root, split_root)
     with split_path.open("r") as f:
         pairs = json.load(f)
-    print("split:", split_name, "| path:", split_path, "| pairs:", len(pairs))
+    print("split:", split_name, "| path:", split_path, "| pairs:", len(pairs), flush=True)
     return [(str(a), str(b)) for a, b in pairs]
 
 
@@ -89,12 +90,19 @@ def prepare_ffpp_split_dataframe(
     csv_path = Path(csv_path)
     deepfakebench_root = Path(deepfakebench_root)
     dataset_root = csv_path.parent
+    print("prepare_ffpp_split_dataframe:", split_name, flush=True)
+    print("csv_path:", csv_path, flush=True)
+    print("dataset_root:", dataset_root, flush=True)
+    print("deepfakebench_root:", deepfakebench_root, flush=True)
     pairs = load_split_pairs(split_name, dataset_root=dataset_root, split_root=split_root)
     video_ids = {vid for pair in pairs for vid in pair}
     pair_keys = {f"{a}_{b}" for a, b in pairs} | {f"{b}_{a}" for a, b in pairs}
 
+    print("reading csv...", flush=True)
     df = pd.read_csv(csv_path)
+    print("csv rows:", len(df), flush=True)
     df = df[df["datasetname"].eq(dataset_name)].copy()
+    print("dataset rows:", len(df), "| dataset:", dataset_name, flush=True)
     df["label_num"] = df["label"].map({"REAL": 0, "FAKE": 1}).astype(int)
     df["imagepath_fixed"] = df["imagepath"].astype(str).str.replace(
         "../input/deepfakebench",
@@ -109,9 +117,12 @@ def prepare_ffpp_split_dataframe(
     fake_component_mask = (~df["is_original"]) & df["video_key"].str.split("_").map(
         lambda x: len(x) >= 2 and x[0] in video_ids and x[1] in video_ids
     )
+    print("matched original rows:", int(original_mask.sum()), flush=True)
+    print("matched fake pair rows:", int(fake_pair_mask.sum()), flush=True)
+    print("matched fake component rows:", int(fake_component_mask.sum()), flush=True)
     out = df[original_mask | fake_pair_mask | fake_component_mask].reset_index(drop=True)
-    print("split dataframe:", split_name, out.shape)
-    print(out["label_num"].value_counts().rename(index={0: "REAL", 1: "FAKE"}))
+    print("split dataframe:", split_name, out.shape, flush=True)
+    print(out["label_num"].value_counts().rename(index={0: "REAL", 1: "FAKE"}), flush=True)
     return out
 
 
