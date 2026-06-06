@@ -127,6 +127,23 @@ def select_balanced_subset(
     return balanced_feats, balanced_labels
 
 
+def shuffle_test_features(
+    feats: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    seed: int,
+    name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(labels), generator=generator)
+    shuffled_feats = feats[indices].contiguous()
+    shuffled_labels = labels[indices].contiguous()
+    print(f"shuffled {name}:")
+    print("label counts [REAL, FAKE]:", torch.bincount(shuffled_labels.long(), minlength=2).tolist())
+    return shuffled_feats, shuffled_labels
+
+
 def load_probe_model(model_path: Path, dim: int, device: str):
     state = torch.load(model_path, map_location="cpu")
     if "center" in state and "basis" in state:
@@ -256,6 +273,17 @@ def main() -> None:
     parser.add_argument("--results-output", default="/kaggle/working/tta_testing_matrix_results.csv")
     parser.add_argument("--balanced-dataset", action="append", default=[])
     parser.add_argument("--balanced-aligned-dataset", action="append", default=[])
+    parser.add_argument(
+        "--shuffle-all-tests",
+        action="store_true",
+        help="Shuffle every non-balanced/non-aligned test feature file before evaluation.",
+    )
+    parser.add_argument(
+        "--shuffle-dataset",
+        action="append",
+        default=[],
+        help="Repeatable dataset name to shuffle before evaluation.",
+    )
     parser.add_argument("--balance-method-fit", action="store_true")
     parser.add_argument("--tta-methods", nargs="+", default=["none", *AVAILABLE_TTA_METHODS])
     parser.add_argument("--method-cache-dir")
@@ -287,6 +315,9 @@ def main() -> None:
     dataset_specs = [parse_spec(value, "dataset") for value in args.dataset]
     model_specs = [parse_spec(value, "model") for value in args.model]
     thresholds = read_thresholds(args.thresholds_csv)
+    balanced_datasets = set(args.balanced_dataset)
+    balanced_aligned_datasets = set(args.balanced_aligned_dataset)
+    shuffle_datasets = set(args.shuffle_dataset)
 
     rows = []
     loaded_models = {}
@@ -297,15 +328,22 @@ def main() -> None:
             print(" -", path)
 
         aligned_ids = None
-        if dataset_name in set(args.balanced_aligned_dataset):
+        if dataset_name in balanced_aligned_datasets:
             aligned_ids = build_aligned_balanced_ids(feature_paths, args.block_size)
 
         for feature_path in feature_paths:
             feats, labels, payload = load_feature_file(str(feature_path))
             if aligned_ids is not None:
                 feats, labels = apply_aligned_ids(feats, labels, payload, aligned_ids)
-            elif dataset_name in set(args.balanced_dataset):
+            elif dataset_name in balanced_datasets:
                 feats, labels = select_balanced_subset(
+                    feats,
+                    labels,
+                    seed=args.seed + sum(ord(ch) for ch in dataset_name + feature_path.name),
+                    name=f"{dataset_name}/{feature_path.name}",
+                )
+            elif args.shuffle_all_tests or dataset_name in shuffle_datasets:
+                feats, labels = shuffle_test_features(
                     feats,
                     labels,
                     seed=args.seed + sum(ord(ch) for ch in dataset_name + feature_path.name),
