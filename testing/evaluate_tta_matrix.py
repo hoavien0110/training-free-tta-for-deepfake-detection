@@ -20,10 +20,14 @@ from deepfake_tta.modeling import (
     load_feature_file,
     seed_everything,
 )
-from testing.evaluate_ffpp_corruption_embeddings import (
-    apply_aligned_ids,
-    build_aligned_balanced_ids,
-)
+
+
+CORRUPTION_NAMES = {
+    "color_contrast",
+    "color_saturation",
+    "gaussian_blur",
+    "resize",
+}
 
 
 def device_arg(value: str) -> str:
@@ -64,6 +68,107 @@ def find_feature_files(path: Path) -> list[Path]:
     if not files:
         raise FileNotFoundError(f"No feature files found under {path}")
     return files
+
+
+def sample_id_from_path(path: str) -> str:
+    parts = Path(path).parts
+    anchors = (
+        "original_sequences",
+        "manipulated_sequences",
+        "Celeb-real",
+        "YouTube-real",
+        "Celeb-synthesis",
+    )
+    for anchor in anchors:
+        if anchor in parts:
+            idx = parts.index(anchor)
+            return "/".join(parts[idx:])
+
+    cleaned = []
+    skip_next_dataset = False
+    for part in parts:
+        if part in CORRUPTION_NAMES or re.fullmatch(r"level_?\d+", part):
+            continue
+        if part in {"FaceForensics++", "Celeb-DF-v1"}:
+            cleaned = [part]
+            skip_next_dataset = True
+            continue
+        if skip_next_dataset:
+            cleaned.append(part)
+        elif cleaned:
+            cleaned.append(part)
+    if cleaned:
+        return "/".join(cleaned)
+
+    return "/".join(parts[-4:])
+
+
+def build_sample_index(payload: dict) -> dict[str, int]:
+    paths = payload.get("paths")
+    if paths is None:
+        raise ValueError("Feature payload does not contain paths, cannot align samples across corruptions.")
+    return {sample_id_from_path(path): idx for idx, path in enumerate(paths)}
+
+
+def interleave_by_blocks(real_ids: list[str], fake_ids: list[str], block_size: int) -> list[str]:
+    ordered = []
+    usable = min(len(real_ids), len(fake_ids))
+    usable = usable - (usable % block_size)
+    real_ids = real_ids[:usable]
+    fake_ids = fake_ids[:usable]
+    for start in range(0, usable, block_size):
+        ordered.extend(real_ids[start : start + block_size])
+        ordered.extend(fake_ids[start : start + block_size])
+    return ordered
+
+
+def build_aligned_balanced_ids(feature_files: list[Path], block_size: int) -> list[str]:
+    common_ids: set[str] | None = None
+    label_by_id = {}
+
+    for feature_path in feature_files:
+        payload = torch.load(feature_path, map_location="cpu")
+        sample_index = build_sample_index(payload)
+        ids = set(sample_index)
+        common_ids = ids if common_ids is None else common_ids & ids
+
+        labels = payload["labels"].long()
+        for sample_id, idx in sample_index.items():
+            label = int(labels[idx].item())
+            previous = label_by_id.get(sample_id)
+            if previous is not None and previous != label:
+                raise ValueError(f"Inconsistent label for sample {sample_id}: {previous} vs {label}")
+            label_by_id[sample_id] = label
+
+    if not common_ids:
+        raise ValueError(
+            "No common sample IDs found across feature files. "
+            "Check that feature payload paths share stable per-frame suffixes."
+        )
+
+    real_ids = sorted(sample_id for sample_id in common_ids if label_by_id[sample_id] == 0)
+    fake_ids = sorted(sample_id for sample_id in common_ids if label_by_id[sample_id] == 1)
+    ordered_ids = interleave_by_blocks(real_ids, fake_ids, block_size)
+    if not ordered_ids:
+        raise ValueError(
+            f"Cannot build balanced aligned test set with block_size={block_size}. "
+            f"Common REAL={len(real_ids)}, FAKE={len(fake_ids)}"
+        )
+
+    print("aligned balanced test:")
+    print("common ids:", len(common_ids))
+    print("common label counts [REAL, FAKE]:", [len(real_ids), len(fake_ids)])
+    print("selected label counts [REAL, FAKE]:", [len(ordered_ids) // 2, len(ordered_ids) // 2])
+    print("block pattern:", block_size, "REAL then", block_size, "FAKE")
+    return ordered_ids
+
+
+def apply_aligned_ids(feats: torch.Tensor, labels: torch.Tensor, payload: dict, ordered_ids: list[str]):
+    sample_index = build_sample_index(payload)
+    indices = torch.tensor([sample_index[sample_id] for sample_id in ordered_ids], dtype=torch.long)
+    feats = feats[indices].contiguous()
+    labels = labels[indices].contiguous()
+    return feats, labels
 
 
 def infer_feature_meta(dataset_name: str, path: Path, payload: dict) -> dict[str, object]:
