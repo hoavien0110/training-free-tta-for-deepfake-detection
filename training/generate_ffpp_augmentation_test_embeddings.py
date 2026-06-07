@@ -111,6 +111,15 @@ def extract_augmented_features(
     use_amp: bool,
     seed: int,
 ):
+    print(
+        "building augmentation dataloader:",
+        f"samples={len(dataframe)}",
+        f"views={views}",
+        f"batch_size={batch_size}",
+        f"effective_clip_batch={batch_size * views}",
+        f"num_workers={num_workers}",
+        flush=True,
+    )
     generator = torch.Generator()
     generator.manual_seed(seed)
     loader = DataLoader(
@@ -124,16 +133,26 @@ def extract_augmented_features(
         worker_init_fn=seed_worker,
         generator=generator,
     )
+    print("dataloader batches:", len(loader), flush=True)
 
     features_mean = []
     features_views = []
     labels = []
     paths = []
-    for images, batch_labels, batch_paths in tqdm(loader):
+    print("starting augmented feature extraction loop", flush=True)
+    for batch_idx, (images, batch_labels, batch_paths) in enumerate(tqdm(loader)):
+        if batch_idx == 0:
+            print("first batch loaded:", tuple(images.shape), flush=True)
         batch_size_current = images.shape[0]
         flat_images = images.flatten(0, 1).to(device, non_blocking=True)
+        if batch_idx == 0:
+            print("first batch flattened for CLIP:", tuple(flat_images.shape), flush=True)
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(use_amp and device == "cuda")):
             flat_features = clip_model.encode_image(flat_images)
+        if batch_idx == 0:
+            print("first batch encoded:", tuple(flat_features.shape), flush=True)
+        elif batch_idx % 25 == 0:
+            print("processed batches:", batch_idx, "/", len(loader), flush=True)
         flat_features = F.normalize(flat_features.float(), dim=-1)
         view_features = flat_features.view(batch_size_current, views, -1)
         mean_features = F.normalize(view_features.mean(dim=1), dim=-1)
