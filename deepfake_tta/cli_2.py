@@ -86,6 +86,42 @@ def select_balanced_train_subset(
     return balanced_feats, balanced_labels
 
 
+def select_shots_per_class(
+    feats: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    shots_per_class: int,
+    seed: int,
+    name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if shots_per_class <= 0:
+        return feats, labels
+
+    labels = labels.long()
+    counts = torch.bincount(labels, minlength=2)
+    if any(int(count.item()) < shots_per_class for count in counts):
+        raise ValueError(
+            f"Cannot select {shots_per_class} shots/class for {name}; "
+            f"label counts [REAL, FAKE]: {counts.tolist()}"
+        )
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    selected = []
+    for cls_idx in range(len(counts)):
+        cls_indices = torch.where(labels == cls_idx)[0]
+        perm = torch.randperm(len(cls_indices), generator=generator)
+        selected.append(cls_indices[perm[:shots_per_class]])
+
+    indices = torch.cat(selected)
+    indices = indices[torch.randperm(len(indices), generator=generator)]
+    shot_feats = feats[indices].contiguous()
+    shot_labels = labels[indices].contiguous()
+    print(f"{name} shots/class:", shots_per_class)
+    print("selected label counts [REAL, FAKE]:", torch.bincount(shot_labels, minlength=2).tolist())
+    return shot_feats, shot_labels
+
+
 def shuffle_train_data(
     train_feats: torch.Tensor,
     train_labels: torch.Tensor,
@@ -101,6 +137,23 @@ def shuffle_train_data(
     return shuffled_feats, shuffled_labels
 
 
+def method_fit_data(
+    method_name: str,
+    args: argparse.Namespace,
+    train_feats: torch.Tensor,
+    train_labels: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if method_name == "tip_adapter" and args.tip_adapter_shots_per_class:
+        return select_shots_per_class(
+            train_feats,
+            train_labels,
+            shots_per_class=args.tip_adapter_shots_per_class,
+            seed=args.seed + 701,
+            name="tip_adapter cache",
+        )
+    return train_feats, train_labels
+
+
 def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train_labels: torch.Tensor):
     methods = []
     for method_name in args.tta_methods:
@@ -112,7 +165,8 @@ def build_tta_methods(args: argparse.Namespace, train_feats: torch.Tensor, train
             cache_batch_size=args.cache_batch_size,
             method_cache_dir=args.method_cache_dir,
         )
-        method.fit(train_feats, train_labels)
+        fit_feats, fit_labels = method_fit_data(method_name, args, train_feats, train_labels)
+        method.fit(fit_feats, fit_labels)
         methods.append(method)
     return methods
 
@@ -291,6 +345,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval-batch-size", type=int, default=4096)
     p.add_argument("--test-batch-size", type=int, default=512)
     p.add_argument("--cache-batch-size", type=int, default=8192)
+    p.add_argument(
+        "--tip-adapter-shots-per-class",
+        type=int,
+        default=0,
+        help="Use K samples per class for the Tip-Adapter cache. 0 keeps the full method-fit set.",
+    )
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--seed", type=int, default=42)

@@ -232,6 +232,42 @@ def select_balanced_subset(
     return balanced_feats, balanced_labels
 
 
+def select_shots_per_class(
+    feats: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    shots_per_class: int,
+    seed: int,
+    name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if shots_per_class <= 0:
+        return feats, labels
+
+    labels = labels.long()
+    counts = torch.bincount(labels, minlength=2)
+    if any(int(count.item()) < shots_per_class for count in counts):
+        raise ValueError(
+            f"Cannot select {shots_per_class} shots/class for {name}; "
+            f"label counts [REAL, FAKE]: {counts.tolist()}"
+        )
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    selected = []
+    for cls_idx in range(len(counts)):
+        cls_indices = torch.where(labels == cls_idx)[0]
+        perm = torch.randperm(len(cls_indices), generator=generator)
+        selected.append(cls_indices[perm[:shots_per_class]])
+
+    indices = torch.cat(selected)
+    indices = indices[torch.randperm(len(indices), generator=generator)]
+    shot_feats = feats[indices].contiguous()
+    shot_labels = labels[indices].contiguous()
+    print(f"{name} shots/class:", shots_per_class)
+    print("selected label counts [REAL, FAKE]:", torch.bincount(shot_labels, minlength=2).tolist())
+    return shot_feats, shot_labels
+
+
 def shuffle_test_features(
     feats: torch.Tensor,
     labels: torch.Tensor,
@@ -302,6 +338,24 @@ def build_tta_method(method_name: str, args: argparse.Namespace, train_feats: to
     return method
 
 
+def method_fit_data(
+    method_name: str,
+    args: argparse.Namespace,
+    tta_train_feats: torch.Tensor,
+    tta_train_labels: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, str]:
+    if method_name == "tip_adapter" and args.tip_adapter_shots_per_class:
+        feats, labels = select_shots_per_class(
+            tta_train_feats,
+            tta_train_labels,
+            shots_per_class=args.tip_adapter_shots_per_class,
+            seed=args.seed + 701,
+            name="tip_adapter cache",
+        )
+        return feats, labels, f"{args.tip_adapter_shots_per_class}_shots_per_class"
+    return tta_train_feats, tta_train_labels, "full"
+
+
 def evaluate_feature_with_model(
     *,
     args: argparse.Namespace,
@@ -352,8 +406,17 @@ def evaluate_feature_with_model(
                     show_report=args.show_report,
                     threshold=threshold,
                 )
+                fit_feats = None
+                fit_labels = None
+                fit_setting = "none"
             else:
-                method = build_tta_method(method_name, args, tta_train_feats, tta_train_labels)
+                fit_feats, fit_labels, fit_setting = method_fit_data(
+                    method_name,
+                    args,
+                    tta_train_feats,
+                    tta_train_labels,
+                )
+                method = build_tta_method(method_name, args, fit_feats, fit_labels)
                 metrics = method.evaluate(
                     model,
                     feats,
@@ -362,7 +425,20 @@ def evaluate_feature_with_model(
                     name=f"{dataset_name} | {feature_path.name} | {model_name} | {method.name}",
                     show_report=args.show_report,
                 )
-            rows.append({**common, **metrics})
+            fit_counts = None
+            fit_samples = None
+            if fit_labels is not None:
+                fit_counts = torch.bincount(fit_labels.long(), minlength=2).tolist()
+                fit_samples = int(len(fit_labels))
+            rows.append(
+                {
+                    **common,
+                    "method_fit_setting": fit_setting,
+                    "method_fit_samples": fit_samples,
+                    "method_fit_counts": fit_counts,
+                    **metrics,
+                }
+            )
         except Exception as exc:
             if not args.continue_on_error:
                 raise
@@ -390,6 +466,12 @@ def main() -> None:
         help="Repeatable dataset name to shuffle before evaluation.",
     )
     parser.add_argument("--balance-method-fit", action="store_true")
+    parser.add_argument(
+        "--tip-adapter-shots-per-class",
+        type=int,
+        default=0,
+        help="Use K samples per class for the Tip-Adapter cache. 0 keeps the full method-fit set.",
+    )
     parser.add_argument("--tta-methods", nargs="+", default=["none", *AVAILABLE_TTA_METHODS])
     parser.add_argument("--method-cache-dir")
     parser.add_argument("--alpha", type=float, default=0.5)

@@ -48,6 +48,7 @@ def main() -> None:
     parser.add_argument("--method-cache-dir", default="/kaggle/working/tta_method_cache")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--shuffle-test-features", action="store_true")
+    parser.add_argument("--tip-adapter-shots-per-class", type=int, default=16)
     parser.add_argument("--results-dir", default="/kaggle/working")
     args = parser.parse_args()
 
@@ -76,6 +77,8 @@ def main() -> None:
                 "freetta_linear_ensemble",
                 "freetta_linear_ensemble_balanced",
                 "--continue-on-error",
+                "--tip-adapter-shots-per-class",
+                str(args.tip_adapter_shots_per_class),
                 "--device",
                 args.device,
                 "--results-output",
@@ -114,6 +117,8 @@ def main() -> None:
             "--method-cache-dir",
             args.method_cache_dir,
             "--continue-on-error",
+            "--tip-adapter-shots-per-class",
+            str(args.tip_adapter_shots_per_class),
             "--device",
             args.device,
             "--results-output",
