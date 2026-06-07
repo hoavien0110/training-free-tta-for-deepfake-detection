@@ -33,6 +33,7 @@ def remap_to_corruption_root(
     deepfakebench_root: str | Path,
     corruption_level_root: str | Path,
     allow_missing: bool = False,
+    trust_paths: bool = False,
 ):
     source_root = Path(deepfakebench_root) / "FaceForensics++"
     corruption_level_root = Path(corruption_level_root)
@@ -44,10 +45,15 @@ def remap_to_corruption_root(
         regex=False,
     )
 
+    print("corruption root:", corruption_level_root, flush=True)
+    print("mapped rows:", len(out), flush=True)
+    if trust_paths:
+        print("trust paths: skipping per-file existence check", flush=True)
+        return out
+
     exists = out["imagepath_fixed"].map(lambda path: Path(path).exists())
     missing_count = int((~exists).sum())
-    print("corruption root:", corruption_level_root)
-    print("mapped rows:", len(out), "| missing files:", missing_count)
+    print("missing files:", missing_count, flush=True)
     if missing_count:
         print("missing examples:")
         print(out.loc[~exists, ["source_imagepath_fixed", "imagepath_fixed"]].head(10).to_string(index=False))
@@ -120,6 +126,7 @@ def main() -> None:
     parser.add_argument("--use-amp", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--allow-missing", action="store_true")
+    parser.add_argument("--trust-paths", action="store_true", help="Skip slow per-file existence checks after path remapping.")
     args = parser.parse_args()
     root_map = parse_root_map(args.corruption_root_map)
 
@@ -165,6 +172,7 @@ def main() -> None:
             deepfakebench_root=args.deepfakebench_root,
             corruption_level_root=corruption_level_root,
             allow_missing=args.allow_missing,
+            trust_paths=args.trust_paths,
         )
         features, labels, paths = extract_features(
             df,

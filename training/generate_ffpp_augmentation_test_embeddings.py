@@ -197,6 +197,7 @@ def main() -> None:
     parser.add_argument("--use-amp", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--allow-missing", action="store_true")
+    parser.add_argument("--trust-paths", action="store_true", help="Skip slow per-file existence checks after path remapping.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -246,6 +247,7 @@ def main() -> None:
             deepfakebench_root=args.deepfakebench_root,
             corruption_level_root=corruption_level_root,
             allow_missing=args.allow_missing,
+            trust_paths=args.trust_paths,
         )
         tasks.append((corruption, corruption_level_root, df))
 
