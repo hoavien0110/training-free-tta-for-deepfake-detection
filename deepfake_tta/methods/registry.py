@@ -7,12 +7,14 @@ from deepfake_tta.methods.crg import CRG, CRGConfig
 from deepfake_tta.methods.dmn import DMN, DMNConfig
 from deepfake_tta.methods.dota import DOTA, DOTAConfig
 from deepfake_tta.methods.dpe import DPE, DPEConfig
+from deepfake_tta.methods.etta import ETTA, ETTAConfig
 from deepfake_tta.methods.dynaprompt import DynaPrompt, DynaPromptConfig
 from deepfake_tta.methods.freetta import FreeTTA, FreeTTAConfig
 from deepfake_tta.methods.freetta_linear_ensemble import (
     FreeTTALinearEnsemble,
     FreeTTALinearEnsembleConfig,
 )
+from deepfake_tta.methods.gda import GDA, GDAConfig
 from deepfake_tta.methods.lightweight_wrappers import (
     LinearEnsembleConfig,
     LinearEnsembleWrapper,
@@ -24,6 +26,7 @@ from deepfake_tta.methods.online_confident_cache_adapter import (
     OnlineConfidentCacheAdapterConfig,
 )
 from deepfake_tta.methods.prototype_linear_tta import PrototypeLinearTTA, PrototypeLinearTTAConfig
+from deepfake_tta.methods.tda import TDA, TDAConfig
 from deepfake_tta.methods.tip_adapter import TipAdapter, TipAdapterConfig
 
 AVAILABLE_TTA_METHODS = (
@@ -35,6 +38,9 @@ AVAILABLE_TTA_METHODS = (
     "dmn",
     "dpe",
     "dota",
+    "tda",
+    "gda",
+    "etta",
     "freetta",
     "freetta_linear_ensemble",
     "freetta_balanced",
@@ -142,6 +148,12 @@ def create_tta_method(
         return BCA(BCAConfig(batch_size=test_batch_size))
     if name == "dota":
         return DOTA(DOTAConfig(batch_size=test_batch_size))
+    if name == "tda":
+        return TDA(TDAConfig(batch_size=test_batch_size))
+    if name == "gda":
+        return GDA(GDAConfig(batch_size=test_batch_size))
+    if name == "etta":
+        return ETTA(ETTAConfig(batch_size=test_batch_size))
     if name == "freetta":
         return FreeTTA(FreeTTAConfig(batch_size=test_batch_size))
     if name == "freetta_linear_ensemble":

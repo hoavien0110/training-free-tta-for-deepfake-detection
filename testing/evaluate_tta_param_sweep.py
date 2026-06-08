@@ -13,7 +13,11 @@ import pandas as pd
 import torch
 
 from deepfake_tta.methods.bca import BCA, BCAConfig
+from deepfake_tta.methods.dota import DOTA, DOTAConfig
+from deepfake_tta.methods.etta import ETTA, ETTAConfig
 from deepfake_tta.methods.freetta import FreeTTA, FreeTTAConfig
+from deepfake_tta.methods.gda import GDA, GDAConfig
+from deepfake_tta.methods.tda import TDA, TDAConfig
 from deepfake_tta.methods.tip_adapter import TipAdapter, TipAdapterConfig
 from deepfake_tta.modeling import evaluate_probe, load_feature_file, seed_everything
 from testing.evaluate_tta_matrix import (
@@ -92,6 +96,75 @@ def compact_grid(args: argparse.Namespace) -> list[dict]:
                 "prototype_momentum": prototype_momentum,
             }
         )
+
+    for base_weight, momentum, confidence_threshold in product(
+        args.dota_base_weight,
+        args.dota_momentum,
+        args.dota_confidence_threshold,
+    ):
+        rows.append(
+            {
+                "method": "dota",
+                "param_id": f"dota_bw{base_weight:g}_m{momentum:g}_ct{confidence_threshold:g}",
+                "base_weight": base_weight,
+                "momentum": momentum,
+                "confidence_threshold": confidence_threshold,
+            }
+        )
+
+    for positive_alpha, positive_beta, positive_entropy_threshold, negative_alpha in product(
+        args.tda_positive_alpha,
+        args.tda_positive_beta,
+        args.tda_positive_entropy_threshold,
+        args.tda_negative_alpha,
+    ):
+        rows.append(
+            {
+                "method": "tda",
+                "param_id": (
+                    f"tda_pa{positive_alpha:g}_pb{positive_beta:g}_"
+                    f"pe{positive_entropy_threshold:g}_na{negative_alpha:g}"
+                ),
+                "positive_alpha": positive_alpha,
+                "positive_beta": positive_beta,
+                "positive_entropy_threshold": positive_entropy_threshold,
+                "negative_alpha": negative_alpha,
+            }
+        )
+
+    for alpha, base_weight, temperature, shrinkage in product(
+        args.gda_alpha,
+        args.gda_base_weight,
+        args.gda_temperature,
+        args.gda_shrinkage,
+    ):
+        rows.append(
+            {
+                "method": "gda",
+                "param_id": f"gda_a{alpha:g}_bw{base_weight:g}_t{temperature:g}_s{shrinkage:g}",
+                "alpha": alpha,
+                "base_weight": base_weight,
+                "temperature": temperature,
+                "shrinkage": shrinkage,
+            }
+        )
+
+    for alpha, beta, momentum, confidence_threshold in product(
+        args.etta_alpha,
+        args.etta_beta,
+        args.etta_momentum,
+        args.etta_confidence_threshold,
+    ):
+        rows.append(
+            {
+                "method": "etta",
+                "param_id": f"etta_a{alpha:g}_b{beta:g}_m{momentum:g}_ct{confidence_threshold:g}",
+                "alpha": alpha,
+                "beta": beta,
+                "momentum": momentum,
+                "confidence_threshold": confidence_threshold,
+            }
+        )
     return rows
 
 
@@ -136,6 +209,61 @@ def create_method(config: dict, args: argparse.Namespace, train_feats: torch.Ten
                 prototype_momentum=float(config["prototype_momentum"]),
                 base_weight=float(config["base_weight"]),
                 confidence_threshold=args.bca_confidence_threshold,
+            )
+        )
+    elif method_name == "dota":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = DOTA(
+            DOTAConfig(
+                batch_size=args.test_batch_size,
+                momentum=float(config["momentum"]),
+                base_weight=float(config["base_weight"]),
+                confidence_threshold=float(config["confidence_threshold"]),
+                min_var=args.dota_min_var,
+            )
+        )
+    elif method_name == "tda":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = TDA(
+            TDAConfig(
+                batch_size=args.test_batch_size,
+                positive_alpha=float(config["positive_alpha"]),
+                positive_beta=float(config["positive_beta"]),
+                positive_entropy_threshold=float(config["positive_entropy_threshold"]),
+                positive_shot_capacity=args.tda_positive_shot_capacity,
+                negative_alpha=float(config["negative_alpha"]),
+                negative_beta=args.tda_negative_beta,
+                negative_shot_capacity=args.tda_negative_shot_capacity,
+                negative_entropy_lower=args.tda_negative_entropy_lower,
+                negative_entropy_upper=args.tda_negative_entropy_upper,
+                negative_mask_lower=args.tda_negative_mask_lower,
+                negative_mask_upper=args.tda_negative_mask_upper,
+                top_k=args.tda_top_k,
+            )
+        )
+    elif method_name == "gda":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = GDA(
+            GDAConfig(
+                batch_size=args.test_batch_size,
+                alpha=float(config["alpha"]),
+                base_weight=float(config["base_weight"]),
+                temperature=float(config["temperature"]),
+                shrinkage=float(config["shrinkage"]),
+                min_var=args.gda_min_var,
+            )
+        )
+    elif method_name == "etta":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = ETTA(
+            ETTAConfig(
+                batch_size=args.test_batch_size,
+                alpha=float(config["alpha"]),
+                beta=float(config["beta"]),
+                momentum=float(config["momentum"]),
+                confidence_threshold=float(config["confidence_threshold"]),
+                entropy_power=args.etta_entropy_power,
+                base_weight=args.etta_base_weight,
             )
         )
     else:
@@ -242,6 +370,33 @@ def main() -> None:
     parser.add_argument("--bca-prior-momentum", nargs="+")
     parser.add_argument("--bca-prototype-momentum", nargs="+")
     parser.add_argument("--bca-confidence-threshold", type=float, default=0.0)
+    parser.add_argument("--dota-base-weight", nargs="+")
+    parser.add_argument("--dota-momentum", nargs="+")
+    parser.add_argument("--dota-confidence-threshold", nargs="+")
+    parser.add_argument("--dota-min-var", type=float, default=1e-4)
+    parser.add_argument("--tda-positive-alpha", nargs="+")
+    parser.add_argument("--tda-positive-beta", nargs="+")
+    parser.add_argument("--tda-positive-entropy-threshold", nargs="+")
+    parser.add_argument("--tda-positive-shot-capacity", type=int, default=64)
+    parser.add_argument("--tda-negative-alpha", nargs="+")
+    parser.add_argument("--tda-negative-beta", type=float, default=5.5)
+    parser.add_argument("--tda-negative-shot-capacity", type=int, default=64)
+    parser.add_argument("--tda-negative-entropy-lower", type=float, default=0.35)
+    parser.add_argument("--tda-negative-entropy-upper", type=float, default=0.8)
+    parser.add_argument("--tda-negative-mask-lower", type=float, default=0.2)
+    parser.add_argument("--tda-negative-mask-upper", type=float, default=0.8)
+    parser.add_argument("--tda-top-k", type=int, default=64)
+    parser.add_argument("--gda-alpha", nargs="+")
+    parser.add_argument("--gda-base-weight", nargs="+")
+    parser.add_argument("--gda-temperature", nargs="+")
+    parser.add_argument("--gda-shrinkage", nargs="+")
+    parser.add_argument("--gda-min-var", type=float, default=1e-4)
+    parser.add_argument("--etta-alpha", nargs="+")
+    parser.add_argument("--etta-beta", nargs="+")
+    parser.add_argument("--etta-momentum", nargs="+")
+    parser.add_argument("--etta-confidence-threshold", nargs="+")
+    parser.add_argument("--etta-entropy-power", type=float, default=1.0)
+    parser.add_argument("--etta-base-weight", type=float, default=1.0)
     parser.add_argument("--eval-batch-size", type=int, default=4096)
     parser.add_argument("--test-batch-size", type=int, default=512)
     parser.add_argument("--cache-batch-size", type=int, default=8192)
@@ -262,6 +417,21 @@ def main() -> None:
     args.bca_base_weight = parse_float_list(args.bca_base_weight, [0.3, 0.5, 0.7])
     args.bca_prior_momentum = parse_float_list(args.bca_prior_momentum, [0.95])
     args.bca_prototype_momentum = parse_float_list(args.bca_prototype_momentum, [0.98])
+    args.dota_base_weight = parse_float_list(args.dota_base_weight, [0.35, 0.55, 0.75])
+    args.dota_momentum = parse_float_list(args.dota_momentum, [0.95, 0.97, 0.99])
+    args.dota_confidence_threshold = parse_float_list(args.dota_confidence_threshold, [0.0, 0.8, 0.9])
+    args.tda_positive_alpha = parse_float_list(args.tda_positive_alpha, [0.25, 0.4])
+    args.tda_positive_beta = parse_float_list(args.tda_positive_beta, [5.5])
+    args.tda_positive_entropy_threshold = parse_float_list(args.tda_positive_entropy_threshold, [0.25, 0.4])
+    args.tda_negative_alpha = parse_float_list(args.tda_negative_alpha, [0.0, 0.15])
+    args.gda_alpha = parse_float_list(args.gda_alpha, [0.5, 1.0, 1.5])
+    args.gda_base_weight = parse_float_list(args.gda_base_weight, [1.0])
+    args.gda_temperature = parse_float_list(args.gda_temperature, [1.0])
+    args.gda_shrinkage = parse_float_list(args.gda_shrinkage, [0.0, 0.1, 0.3])
+    args.etta_alpha = parse_float_list(args.etta_alpha, [0.25, 0.45, 0.65])
+    args.etta_beta = parse_float_list(args.etta_beta, [8.0, 12.0])
+    args.etta_momentum = parse_float_list(args.etta_momentum, [0.95, 0.97])
+    args.etta_confidence_threshold = parse_float_list(args.etta_confidence_threshold, [0.8, 0.9])
 
     device = device_arg(args.device)
     seed_everything(args.seed)
