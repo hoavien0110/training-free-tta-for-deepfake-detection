@@ -4,6 +4,7 @@ import argparse
 from itertools import product
 from pathlib import Path
 import sys
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -12,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 import torch
 
+from deepfake_tta.methods.base import TTAMethod
 from deepfake_tta.methods.bca import BCA, BCAConfig
 from deepfake_tta.methods.dota import DOTA, DOTAConfig
 from deepfake_tta.methods.etta import ETTA, ETTAConfig
@@ -34,6 +36,32 @@ from testing.evaluate_tta_matrix import (
 )
 
 
+class WeightedTTAEnsemble(TTAMethod):
+    """Blend probabilities from multiple fitted TTA methods."""
+
+    def __init__(self, methods: list[TTAMethod], weights: list[float], name: str = "best4_ensemble"):
+        super().__init__(name=name)
+        if len(methods) != len(weights):
+            raise ValueError("WeightedTTAEnsemble requires one weight per method.")
+        total = sum(weights)
+        if total <= 0:
+            raise ValueError("WeightedTTAEnsemble weights must sum to a positive value.")
+        self.methods = methods
+        self.weights = [weight / total for weight in weights]
+
+    def fit(self, train_feats: torch.Tensor, train_labels: torch.Tensor) -> None:
+        for method in self.methods:
+            method.fit(train_feats, train_labels)
+
+    @torch.no_grad()
+    def predict_proba(self, model: Any, test_feats: torch.Tensor, device: str) -> torch.Tensor:
+        blended = None
+        for method, weight in zip(self.methods, self.weights):
+            probs = method.predict_proba(model, test_feats, device).cpu()
+            blended = weight * probs if blended is None else blended + weight * probs
+        return blended.clamp_min(1e-8)
+
+
 def device_arg(value: str) -> str:
     if value == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -50,6 +78,32 @@ def parse_int_list(values: list[str] | None, default: list[int]) -> list[int]:
     if not values:
         return default
     return [int(value) for value in values]
+
+
+def parse_ensemble_weights(values: list[str] | None) -> list[tuple[float, float, float, float]]:
+    if not values:
+        return [
+            (0.25, 0.25, 0.25, 0.25),
+            (0.40, 0.20, 0.25, 0.15),
+            (0.35, 0.20, 0.30, 0.15),
+            (0.30, 0.20, 0.35, 0.15),
+            (0.30, 0.25, 0.30, 0.15),
+            (0.25, 0.20, 0.40, 0.15),
+            (0.25, 0.15, 0.40, 0.20),
+            (0.20, 0.20, 0.40, 0.20),
+        ]
+
+    rows = []
+    for value in values:
+        parts = [float(part.strip()) for part in value.split(",")]
+        if len(parts) != 4:
+            raise ValueError(
+                f"Invalid ensemble weight set {value!r}. Expected four comma-separated weights: dota,free,bca,tda."
+            )
+        if sum(parts) <= 0:
+            raise ValueError(f"Invalid ensemble weight set {value!r}. Weights must sum to a positive value.")
+        rows.append(tuple(parts))
+    return rows
 
 
 def compact_grid(args: argparse.Namespace) -> list[dict]:
@@ -165,6 +219,21 @@ def compact_grid(args: argparse.Namespace) -> list[dict]:
                 "confidence_threshold": confidence_threshold,
             }
         )
+
+    for dota_weight, free_weight, bca_weight, tda_weight in args.ensemble_weights:
+        rows.append(
+            {
+                "method": "best4_ensemble",
+                "param_id": (
+                    f"ens_d{dota_weight:g}_f{free_weight:g}_"
+                    f"b{bca_weight:g}_t{tda_weight:g}"
+                ),
+                "dota_weight": dota_weight,
+                "free_weight": free_weight,
+                "bca_weight": bca_weight,
+                "tda_weight": tda_weight,
+            }
+        )
     return rows
 
 
@@ -265,6 +334,64 @@ def create_method(config: dict, args: argparse.Namespace, train_feats: torch.Ten
                 entropy_power=args.etta_entropy_power,
                 base_weight=args.etta_base_weight,
             )
+        )
+    elif method_name == "best4_ensemble":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = WeightedTTAEnsemble(
+            methods=[
+                DOTA(
+                    DOTAConfig(
+                        batch_size=args.test_batch_size,
+                        base_weight=0.55,
+                        momentum=0.95,
+                        confidence_threshold=0.9,
+                        min_var=args.dota_min_var,
+                    )
+                ),
+                FreeTTA(
+                    FreeTTAConfig(
+                        batch_size=args.test_batch_size,
+                        base_weight=0.6,
+                        momentum=0.9,
+                        prior_power=1.0,
+                        min_var=args.freetta_min_var,
+                        warmup_batches=args.freetta_warmup_batches,
+                    )
+                ),
+                BCA(
+                    BCAConfig(
+                        batch_size=args.test_batch_size,
+                        temperature=0.03,
+                        base_weight=0.7,
+                        prior_momentum=0.95,
+                        prototype_momentum=0.98,
+                        confidence_threshold=args.bca_confidence_threshold,
+                    )
+                ),
+                TDA(
+                    TDAConfig(
+                        batch_size=args.test_batch_size,
+                        positive_alpha=0.4,
+                        positive_beta=5.5,
+                        positive_entropy_threshold=0.4,
+                        positive_shot_capacity=args.tda_positive_shot_capacity,
+                        negative_alpha=0.0,
+                        negative_beta=args.tda_negative_beta,
+                        negative_shot_capacity=args.tda_negative_shot_capacity,
+                        negative_entropy_lower=args.tda_negative_entropy_lower,
+                        negative_entropy_upper=args.tda_negative_entropy_upper,
+                        negative_mask_lower=args.tda_negative_mask_lower,
+                        negative_mask_upper=args.tda_negative_mask_upper,
+                        top_k=args.tda_top_k,
+                    )
+                ),
+            ],
+            weights=[
+                float(config["dota_weight"]),
+                float(config["free_weight"]),
+                float(config["bca_weight"]),
+                float(config["tda_weight"]),
+            ],
         )
     else:
         raise ValueError(f"Cannot create TTA method for config: {config}")
@@ -397,6 +524,11 @@ def main() -> None:
     parser.add_argument("--etta-confidence-threshold", nargs="+")
     parser.add_argument("--etta-entropy-power", type=float, default=1.0)
     parser.add_argument("--etta-base-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--ensemble-weights",
+        nargs="+",
+        help="Weight sets for best4_ensemble as dota,free,bca,tda. Repeat values separated by spaces.",
+    )
     parser.add_argument("--eval-batch-size", type=int, default=4096)
     parser.add_argument("--test-batch-size", type=int, default=512)
     parser.add_argument("--cache-batch-size", type=int, default=8192)
@@ -432,6 +564,7 @@ def main() -> None:
     args.etta_beta = parse_float_list(args.etta_beta, [8.0, 12.0])
     args.etta_momentum = parse_float_list(args.etta_momentum, [0.95, 0.97])
     args.etta_confidence_threshold = parse_float_list(args.etta_confidence_threshold, [0.8, 0.9])
+    args.ensemble_weights = parse_ensemble_weights(args.ensemble_weights)
 
     device = device_arg(args.device)
     seed_everything(args.seed)
