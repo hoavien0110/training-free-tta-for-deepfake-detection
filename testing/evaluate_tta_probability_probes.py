@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -282,6 +283,33 @@ def append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     )
 
 
+def slugify(value: Any) -> str:
+    text = "none" if value is None else str(value)
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-") or "none"
+
+
+def split_probe_path(output_dir: Path, common: dict[str, Any]) -> Path:
+    dataset_name = str(common.get("dataset", "dataset"))
+    corruption = common.get("corruption", "none")
+    level = common.get("level")
+    balance_state = "balanced" if dataset_name.endswith("-balanced") else "imbalanced"
+    corruption_state = "clean" if corruption in {None, "", "none"} else "corrupt"
+    parts = [
+        "probes",
+        f"method-{slugify(common.get('method'))}",
+        f"model-{slugify(common.get('model'))}",
+        f"dataset-{slugify(dataset_name)}",
+        balance_state,
+        corruption_state,
+        f"corruption-{slugify(corruption)}",
+    ]
+    if level is not None and not (isinstance(level, float) and np.isnan(level)):
+        parts.append(f"level-{slugify(level)}")
+    return output_dir / ("__".join(parts) + ".csv")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-features", required=True)
@@ -289,6 +317,7 @@ def main() -> None:
     parser.add_argument("--model", action="append", required=True, help="Repeatable NAME=PATH model .pt.")
     parser.add_argument("--thresholds-csv", action="append")
     parser.add_argument("--probes-output", default="/kaggle/working/tta_probability_probes.csv")
+    parser.add_argument("--split-probe-dir", help="Write one probe CSV per method/model/dataset/corruption/balance combo.")
     parser.add_argument("--summary-output", default="/kaggle/working/tta_probability_probe_summary.csv")
     parser.add_argument("--balanced-dataset", action="append", default=[])
     parser.add_argument("--balanced-aligned-dataset", action="append", default=[])
@@ -354,10 +383,16 @@ def main() -> None:
     shuffle_datasets = set(args.shuffle_dataset)
 
     probes_output = Path(args.probes_output)
+    split_probe_dir = Path(args.split_probe_dir) if args.split_probe_dir else None
     summary_output = Path(args.summary_output)
     probes_output.parent.mkdir(parents=True, exist_ok=True)
     summary_output.parent.mkdir(parents=True, exist_ok=True)
-    probes_output.unlink(missing_ok=True)
+    if split_probe_dir:
+        split_probe_dir.mkdir(parents=True, exist_ok=True)
+        for old_path in split_probe_dir.glob("*.csv"):
+            old_path.unlink()
+    else:
+        probes_output.unlink(missing_ok=True)
     summary_output.unlink(missing_ok=True)
 
     loaded_models = {}
@@ -448,22 +483,34 @@ def main() -> None:
                                 **summarize_scores(y_true, scores, y_pred),
                             }
                         ]
-                        append_rows(probes_output, current_probe_rows)
+                        current_probe_output = (
+                            split_probe_path(split_probe_dir, common) if split_probe_dir else probes_output
+                        )
+                        append_rows(current_probe_output, current_probe_rows)
                         append_rows(summary_output, current_summary_rows)
-                        print("appended rows:", len(current_probe_rows), "->", probes_output, flush=True)
+                        print("appended rows:", len(current_probe_rows), "->", current_probe_output, flush=True)
                     except Exception as exc:
                         if not args.continue_on_error:
                             raise
                         append_rows(summary_output, [{**common, "error": repr(exc)}])
 
-    if not probes_output.exists():
+    if split_probe_dir and not any(split_probe_dir.glob("*.csv")):
+        append_rows(split_probe_dir / "probes__error-no-probe-rows.csv", [{"error": "No probe rows were produced. Check summary output for method errors."}])
+    elif not split_probe_dir and not probes_output.exists():
         append_rows(probes_output, [{"error": "No probe rows were produced. Check summary output for method errors."}])
     if not summary_output.exists():
         append_rows(summary_output, [{"error": "No summary rows were produced."}])
 
-    print(pd.read_csv(probes_output).head())
+    if split_probe_dir:
+        split_files = sorted(split_probe_dir.glob("*.csv"))
+        print("saved split probe files:", len(split_files), "under", split_probe_dir)
+        if split_files:
+            print("first split file:", split_files[0])
+            print(pd.read_csv(split_files[0]).head())
+    else:
+        print(pd.read_csv(probes_output).head())
     print(pd.read_csv(summary_output))
-    print("saved probes:", probes_output)
+    print("saved probes:", split_probe_dir if split_probe_dir else probes_output)
     print("saved summary:", summary_output)
 
 
