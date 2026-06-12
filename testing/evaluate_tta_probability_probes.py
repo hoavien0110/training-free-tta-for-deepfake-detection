@@ -275,12 +275,27 @@ def append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(
+    df = pd.DataFrame(rows)
+    if path.exists():
+        columns = pd.read_csv(path, nrows=0).columns.tolist()
+        df = df.reindex(columns=columns)
+    df.to_csv(
         path,
         mode="a",
         header=not path.exists(),
         index=False,
     )
+
+
+def append_rows_union(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = pd.DataFrame(rows)
+    if path.exists():
+        previous = pd.read_csv(path)
+        current = pd.concat([previous, current], ignore_index=True, sort=False)
+    current.to_csv(path, index=False)
 
 
 def slugify(value: Any) -> str:
@@ -487,19 +502,19 @@ def main() -> None:
                             split_probe_path(split_probe_dir, common) if split_probe_dir else probes_output
                         )
                         append_rows(current_probe_output, current_probe_rows)
-                        append_rows(summary_output, current_summary_rows)
+                        append_rows_union(summary_output, current_summary_rows)
                         print("appended rows:", len(current_probe_rows), "->", current_probe_output, flush=True)
                     except Exception as exc:
                         if not args.continue_on_error:
                             raise
-                        append_rows(summary_output, [{**common, "error": repr(exc)}])
+                        append_rows_union(summary_output, [{**common, "error": repr(exc)}])
 
     if split_probe_dir and not any(split_probe_dir.glob("*.csv")):
         append_rows(split_probe_dir / "probes__error-no-probe-rows.csv", [{"error": "No probe rows were produced. Check summary output for method errors."}])
     elif not split_probe_dir and not probes_output.exists():
         append_rows(probes_output, [{"error": "No probe rows were produced. Check summary output for method errors."}])
     if not summary_output.exists():
-        append_rows(summary_output, [{"error": "No summary rows were produced."}])
+        append_rows_union(summary_output, [{"error": "No summary rows were produced."}])
 
     if split_probe_dir:
         split_files = sorted(split_probe_dir.glob("*.csv"))
