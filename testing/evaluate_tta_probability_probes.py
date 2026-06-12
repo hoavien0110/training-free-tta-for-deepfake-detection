@@ -270,6 +270,18 @@ def probability_rows(
     return rows
 
 
+def append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(
+        path,
+        mode="a",
+        header=not path.exists(),
+        index=False,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-features", required=True)
@@ -341,8 +353,13 @@ def main() -> None:
     balanced_aligned_datasets = set(args.balanced_aligned_dataset)
     shuffle_datasets = set(args.shuffle_dataset)
 
-    probe_rows = []
-    summary_rows = []
+    probes_output = Path(args.probes_output)
+    summary_output = Path(args.summary_output)
+    probes_output.parent.mkdir(parents=True, exist_ok=True)
+    summary_output.parent.mkdir(parents=True, exist_ok=True)
+    probes_output.unlink(missing_ok=True)
+    summary_output.unlink(missing_ok=True)
+
     loaded_models = {}
 
     for dataset_name, dataset_path in dataset_specs:
@@ -412,10 +429,17 @@ def main() -> None:
                             scores = probs[:, 1].numpy()
                             y_pred = probs.argmax(dim=1).numpy().astype(int)
 
-                        probe_rows.extend(
-                            probability_rows(common, sample_ids, labels, probs, y_pred, threshold, fit_samples, fit_counts)
+                        current_probe_rows = probability_rows(
+                            common,
+                            sample_ids,
+                            labels,
+                            probs,
+                            y_pred,
+                            threshold,
+                            fit_samples,
+                            fit_counts,
                         )
-                        summary_rows.append(
+                        current_summary_rows = [
                             {
                                 **common,
                                 "n_samples": int(len(labels)),
@@ -423,22 +447,24 @@ def main() -> None:
                                 "method_fit_counts": fit_counts,
                                 **summarize_scores(y_true, scores, y_pred),
                             }
-                        )
+                        ]
+                        append_rows(probes_output, current_probe_rows)
+                        append_rows(summary_output, current_summary_rows)
+                        print("appended rows:", len(current_probe_rows), "->", probes_output, flush=True)
                     except Exception as exc:
                         if not args.continue_on_error:
                             raise
-                        summary_rows.append({**common, "error": repr(exc)})
+                        append_rows(summary_output, [{**common, "error": repr(exc)}])
 
-    probes = pd.DataFrame(probe_rows)
-    summary = pd.DataFrame(summary_rows)
-    Path(args.probes_output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.summary_output).parent.mkdir(parents=True, exist_ok=True)
-    probes.to_csv(args.probes_output, index=False)
-    summary.to_csv(args.summary_output, index=False)
-    print(probes.head())
-    print(summary)
-    print("saved probes:", args.probes_output)
-    print("saved summary:", args.summary_output)
+    if not probes_output.exists():
+        append_rows(probes_output, [{"error": "No probe rows were produced. Check summary output for method errors."}])
+    if not summary_output.exists():
+        append_rows(summary_output, [{"error": "No summary rows were produced."}])
+
+    print(pd.read_csv(probes_output).head())
+    print(pd.read_csv(summary_output))
+    print("saved probes:", probes_output)
+    print("saved summary:", summary_output)
 
 
 if __name__ == "__main__":
