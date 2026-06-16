@@ -1,4 +1,5 @@
 from deepfake_tta.methods.base import TTAMethod
+from deepfake_tta.methods.adaptive_dota_bca import AdaptiveDotaBca, AdaptiveDotaBcaConfig
 from deepfake_tta.methods.bca import BCA, BCAConfig
 from deepfake_tta.methods.boost_adapter import BoostAdapter, BoostAdapterConfig
 from deepfake_tta.methods.compact_cache_adapter import CompactCacheAdapter, CompactCacheAdapterConfig
@@ -28,6 +29,8 @@ from deepfake_tta.methods.tip_adapter import TipAdapter, TipAdapterConfig
 
 __all__ = [
     "AVAILABLE_TTA_METHODS",
+    "AdaptiveDotaBca",
+    "AdaptiveDotaBcaConfig",
     "BCA",
     "BCAConfig",
     "BoostAdapter",

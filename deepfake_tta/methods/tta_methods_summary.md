@@ -1,6 +1,6 @@
 # TTA Methods Summary
 
-File này tóm tắt 24 phương pháp đang chạy trong codebase, gồm `linear_probe` baseline và 23 TTA methods trong `registry.py`.
+File này tóm tắt 25 phương pháp đang chạy trong codebase, gồm `linear_probe` baseline và 24 TTA methods trong `registry.py`.
 
 Quy ước label:
 
@@ -35,6 +35,7 @@ Các setting dưới đây là default hiện tại khi gọi qua `create_tta_me
 | 22 | `dynaprompt` | Prompt-style approximation | Không full cache | Có. Update feature-space/prediction state theo entropy/confidence approximation. | Không | `batch_size=512` | Feature-space approximation của dynamic prompt/entropy adaptation. Không phải prompt CLIP paper-exact. |
 | 23 | `prototype_linear_tta` | Prototype + linear-head update | K-means prototypes nhỏ | Có. Mỗi test batch tính anchor probability từ prototypes để tạo loss adaptation. | Có. Copy linear probe rồi update `fc.weight`/`fc.bias` bằng `loss.backward()` + `optimizer.step()`. | `prototypes_by_class={0:32,1:128}`, `lr=1e-5`, `steps_per_batch=1`, `anchor_weight=0.3`, `reg_weight=0.1`, `balance_weight=0.0` | K-means prototypes làm anchor probability, rồi update linear head online mỗi test batch. |
 | 24 | `prototype_linear_tta_balanced` | Prototype + linear-head update + balance | K-means prototypes nhỏ | Có. Tính anchor/prototype loss, thêm target prior `50/50`, rồi wrapper balance output. | Có. Update copied `fc.weight`/`fc.bias`; model gốc không đổi. | `lr=5e-6`, `anchor_weight=0.2`, `reg_weight=0.2`, `balance_weight=0.1`, `target_prior=(0.5,0.5)`, wrapper balance strength `0.6` | PrototypeLinearTTA bản ổn định hơn, có target prior 50/50 và output balance. |
+| 25 | `adaptive_dota_bca` | Reliability-gated ensemble | DOTA Gaussian stats + BCA prototypes | Có. Update Gaussian/prototype state bằng output đã gate, có confidence threshold. | Không | DOTA branch `base_weight=0.75`, `momentum=0.97`, `ct=0.8`; BCA branch `temperature=0.03`, `base_weight=0.7`; gate theo entropy/disagreement. | Router nhẹ giữa frozen probe, DOTA, và BCA. Khi DOTA/BCA bất đồng, tăng weight baseline để giảm drift. |
 
 ## Cache Groups
 
@@ -45,6 +46,7 @@ freetta
 freetta_linear_ensemble
 freetta_balanced
 freetta_linear_ensemble_balanced
+adaptive_dota_bca
 dota
 dota_balanced
 dota_linear_ensemble_balanced
@@ -83,6 +85,7 @@ Nếu mục tiêu là tăng AUC nhưng hạn chế storage, ưu tiên test các 
 ```text
 freetta_linear_ensemble_balanced
 freetta_balanced
+adaptive_dota_bca
 dota_linear_ensemble_balanced
 prototype_linear_tta_balanced
 online_cache_10_balanced

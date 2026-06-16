@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from deepfake_tta.methods.adaptive_dota_bca import AdaptiveDotaBca, AdaptiveDotaBcaConfig
 from deepfake_tta.methods.bca import BCA, BCAConfig
 from deepfake_tta.methods.boost_adapter import BoostAdapter, BoostAdapterConfig
 from deepfake_tta.methods.compact_cache_adapter import CompactCacheAdapter, CompactCacheAdapterConfig
@@ -51,6 +52,7 @@ AVAILABLE_TTA_METHODS = (
     "dpe_linear_ensemble_balanced",
     "dota_balanced",
     "dota_linear_ensemble_balanced",
+    "adaptive_dota_bca",
     "prototype_linear_tta_balanced",
     "online_cache_10_balanced",
     "bca",
@@ -148,6 +150,8 @@ def create_tta_method(
         return BCA(BCAConfig(batch_size=test_batch_size))
     if name == "dota":
         return DOTA(DOTAConfig(batch_size=test_batch_size))
+    if name == "adaptive_dota_bca":
+        return AdaptiveDotaBca(AdaptiveDotaBcaConfig(batch_size=test_batch_size))
     if name == "tda":
         return TDA(TDAConfig(batch_size=test_batch_size))
     if name == "gda":
