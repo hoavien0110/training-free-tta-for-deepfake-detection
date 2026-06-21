@@ -62,6 +62,17 @@ DEFAULT_METHOD_CONFIGS: dict[str, dict[str, Any]] = {
         "momentum": 0.95,
         "confidence_threshold": 0.9,
     },
+    "adaptive_dota_bca": {
+        "method": "adaptive_dota_bca",
+        "param_id": "adaptive_dota_bca_dm0.97_dbw0.75_dct0.8_bt0.03_bbw0.7",
+        "dota_momentum": 0.97,
+        "dota_base_weight": 0.75,
+        "dota_confidence_threshold": 0.8,
+        "bca_temperature": 0.03,
+        "bca_base_weight": 0.7,
+        "bca_prior_momentum": 0.95,
+        "bca_prototype_momentum": 0.98,
+    },
     "tda": {
         "method": "tda",
         "param_id": "tda_pa0.4_pb5.5_pe0.4_na0",

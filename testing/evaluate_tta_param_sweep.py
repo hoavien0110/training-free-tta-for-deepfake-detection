@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 
 from deepfake_tta.methods.base import TTAMethod
+from deepfake_tta.methods.adaptive_dota_bca import AdaptiveDotaBca, AdaptiveDotaBcaConfig
 from deepfake_tta.methods.bca import BCA, BCAConfig
 from deepfake_tta.methods.dota import DOTA, DOTAConfig
 from deepfake_tta.methods.etta import ETTA, ETTAConfig
@@ -289,6 +290,24 @@ def create_method(config: dict, args: argparse.Namespace, train_feats: torch.Ten
                 base_weight=float(config["base_weight"]),
                 confidence_threshold=float(config["confidence_threshold"]),
                 min_var=args.dota_min_var,
+            )
+        )
+    elif method_name == "adaptive_dota_bca":
+        fit_feats, fit_labels = train_feats, train_labels
+        method = AdaptiveDotaBca(
+            AdaptiveDotaBcaConfig(
+                batch_size=args.test_batch_size,
+                dota_momentum=float(config.get("dota_momentum", 0.97)),
+                dota_base_weight=float(config.get("dota_base_weight", 0.75)),
+                dota_confidence_threshold=float(config.get("dota_confidence_threshold", 0.8)),
+                bca_temperature=float(config.get("bca_temperature", 0.03)),
+                bca_base_weight=float(config.get("bca_base_weight", 0.7)),
+                bca_prior_momentum=float(config.get("bca_prior_momentum", 0.95)),
+                bca_prototype_momentum=float(config.get("bca_prototype_momentum", 0.98)),
+                min_var=float(config.get("min_var", args.dota_min_var)),
+                base_floor=float(config.get("base_floor", 0.15)),
+                disagreement_gain=float(config.get("disagreement_gain", 1.5)),
+                confidence_power=float(config.get("confidence_power", 1.5)),
             )
         )
     elif method_name == "tda":
